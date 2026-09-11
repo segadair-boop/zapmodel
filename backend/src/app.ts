@@ -463,6 +463,36 @@ setWhatsAppEventSink({
   },
   onMessage: async event => {
     try {
+      // Mídia recebida vira arquivo na biblioteca com URL de download válida.
+      if (event.media) {
+        try {
+          const db = await background();
+          const session = await getSessionById(db, event.sessionId);
+          if (session) {
+            const safeName = event.media.fileName.replace(/[^\w.\-]+/g, '_').slice(-80) || 'arquivo';
+            const storedName = `${newId()}-${safeName}`;
+            await fs.writeFile(path.join(uploadDir, storedName), event.media.buffer);
+            const asset = await db
+              .from('FileAsset')
+              .insert({
+                id: newId(),
+                companyId: session.companyId,
+                name: event.media.fileName,
+                path: storedName,
+                mimeType: event.media.mimeType,
+                size: event.media.buffer.length
+              })
+              .select('id')
+              .single();
+            if (asset.error) throw asset.error;
+            event.mediaUrl = `/api/files/${asset.data.id}/download`;
+            event.mediaType = event.media.mimeType;
+          }
+        } catch (mediaErr) {
+          console.error('[worker] falha ao salvar mídia recebida', mediaErr);
+        }
+      }
+
       const saved = await persistIncomingMessage(event);
       if (saved) {
         io.to(saved.companyId).emit('message:created', { ticketId: saved.ticketId, message: saved.message });
@@ -472,6 +502,7 @@ setWhatsAppEventSink({
       console.error('[worker] falha ao gravar mensagem', err);
     }
   }
+
 });
 
 /* ---------------------------- socket ---------------------------- */
