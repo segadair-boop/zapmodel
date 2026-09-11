@@ -70,6 +70,61 @@ function getBody(message: WAMessage): string {
   );
 }
 
+const isLid = (jid?: string | null) => Boolean(jid && jid.endsWith('@lid'));
+const isPnJid = (jid?: string | null) => Boolean(jid && jid.endsWith('@s.whatsapp.net'));
+
+/** Normaliza um JID de usuário removendo device/agent (ex.: 55...:12@s.whatsapp.net). */
+function normalizeJid(jid?: string | null): string | null {
+  if (!jid) return null;
+  const [user, server] = jid.split('@');
+  if (!user || !server) return null;
+  const bare = user.split(':')[0]!.split('_')[0]!;
+  return `${bare}@${server}`;
+}
+
+/** Extrai o número real apenas de JIDs de telefone (nunca de @lid). */
+function numberFromPnJid(jid?: string | null): string | null {
+  const normalized = normalizeJid(jid);
+  if (!normalized || !isPnJid(normalized)) return null;
+  const digits = normalized.split('@')[0]!.replace(/\D/g, '');
+  return digits || null;
+}
+
+/** Tenta mapear um LID para o número real via signalRepository (Baileys 6.7.x). */
+async function lidToPn(sock: WASocket, lid: string): Promise<string | null> {
+  try {
+    const mapping = (sock as any)?.signalRepository?.lidMapping;
+    const pn = await mapping?.getPNForLID?.(lid);
+    return normalizeJid(typeof pn === 'string' ? pn : null);
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve o JID endereçável do contato e o número real, quando existir. */
+async function resolvePeer(
+  sock: WASocket,
+  message: WAMessage
+): Promise<{ whatsappJid: string; number: string | null }> {
+  const key = message.key as any;
+  const remoteJid = normalizeJid(key.remoteJid)!;
+  const candidates = [key.remoteJidAlt, key.senderPn, key.participantPn, (message as any).senderPn]
+    .map(normalizeJid)
+    .filter(isPnJid) as string[];
+
+  if (candidates[0]) return { whatsappJid: candidates[0], number: numberFromPnJid(candidates[0]) };
+
+  if (isLid(remoteJid)) {
+    const pn = await lidToPn(sock, remoteJid);
+    if (pn && isPnJid(pn)) return { whatsappJid: pn, number: numberFromPnJid(pn) };
+    return { whatsappJid: remoteJid, number: null };
+  }
+
+  return { whatsappJid: remoteJid, number: numberFromPnJid(remoteJid) };
+}
+
+
+
 export async function connectSession(sessionId: string) {
   if (sockets.has(sessionId)) return;
   await fs.mkdir(authRoot, { recursive: true });
