@@ -187,10 +187,37 @@ function SimpleCrud({session,title,table,fields}:{session:Session;title:string;t
   return <div className="stack"><div className="page-actions"><p>Cadastros de {title.toLowerCase()}.</p><button className="primary-btn" onClick={add}><Plus size={16}/>Novo</button></div><section className="panel"><Table heads={[...fields.map(label),""]} rows={r.data.map(row=>[...fields.map(f=>row[f]||"—"),<button className="danger-icon" onClick={()=>del(row.id)}><Trash2 size={16}/></button>])}/></section></div>
 }
 
+const KANBAN_COLUMNS=[{s:"OPEN",t:"Em atendimento"},{s:"PENDING",t:"Aguardando"},{s:"CLOSED",t:"Finalizados"}];
+
 function Kanban(){
   const r=useData<any[]>(()=>selectAll("Ticket",TICKET_SELECT,"updatedAt"),[],4000);
-  const columns=[{s:"OPEN",t:"Em atendimento"},{s:"PENDING",t:"Aguardando"},{s:"CLOSED",t:"Finalizados"}];
-  return <div className="kanban-board">{columns.map(c=><section className="kanban-col" key={c.s}><h3>{c.t}<span>{r.data.filter(t=>t.status===c.s).length}</span></h3>{r.data.filter(t=>t.status===c.s).map(t=><div className="kanban-card" key={t.id}><strong>{t.contact?.name}</strong><p>{t.lastMessage||"Sem mensagens"}</p><small>{t.queue?.name||"Sem fila"}</small></div>)}</section>)}</div>
+  const [moved,setMoved]=useState<Record<string,string>>({});
+  const [dragId,setDragId]=useState("");
+  const [overCol,setOverCol]=useState("");
+  const statusOf=(t:any)=>moved[t.id]||t.status;
+  async function move(id:string,status:string){
+    const current=r.data.find(t=>t.id===id); if(!current||statusOf(current)===status)return;
+    setMoved(v=>({...v,[id]:status}));
+    try{ await updateRow("Ticket",id,{status}); r.reload(); }
+    catch(e:any){ setMoved(v=>{const n={...v};delete n[id];return n}); r.reload(); alert(e.message||"Não foi possível mover o card."); }
+  }
+  return <div className="kanban-board">{KANBAN_COLUMNS.map(c=>{
+    const cards=r.data.filter(t=>statusOf(t)===c.s);
+    return <section className="kanban-col" key={c.s}
+      style={overCol===c.s?{outline:"2px dashed var(--green)",outlineOffset:"-4px",background:"#dfeae5"}:undefined}
+      onDragOver={e=>{e.preventDefault();if(overCol!==c.s)setOverCol(c.s)}}
+      onDragLeave={()=>setOverCol(o=>o===c.s?"":o)}
+      onDrop={e=>{e.preventDefault();setOverCol("");const id=dragId||e.dataTransfer.getData("text/plain");if(id)move(id,c.s);setDragId("")}}>
+      <h3>{c.t}<span>{cards.length}</span></h3>
+      {cards.map(t=><div className="kanban-card" key={t.id} draggable
+        style={{cursor:dragId===t.id?"grabbing":"grab",opacity:dragId===t.id?.5:1}}
+        onDragStart={e=>{setDragId(t.id);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",t.id)}}
+        onDragEnd={()=>{setDragId("");setOverCol("")}}>
+        <strong>{t.contact?.name}</strong><p>{t.lastMessage||"Sem mensagens"}</p><small>{t.queue?.name||"Sem fila"}</small>
+        <div className="row-actions">{KANBAN_COLUMNS.filter(o=>o.s!==c.s).map(o=><button key={o.s} onClick={()=>move(t.id,o.s)}>{o.t}</button>)}</div>
+      </div>)}
+    </section>;
+  })}</div>
 }
 
 function Schedules({session}:{session:Session}){
