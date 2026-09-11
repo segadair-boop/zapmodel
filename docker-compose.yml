@@ -1,19 +1,4 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: zapmodel
-      POSTGRES_USER: zapmodel
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-now}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U zapmodel -d zapmodel"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -25,15 +10,14 @@ services:
     build: ./backend
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_started
     environment:
       NODE_ENV: production
       PORT: 8080
       FRONTEND_URL: ${FRONTEND_URL:-https://zapmodel.lovable.app}
-      DATABASE_URL: postgresql://zapmodel:${POSTGRES_PASSWORD:-change-me-now}@postgres:5432/zapmodel?schema=public
+      TURSO_DATABASE_URL: ${TURSO_DATABASE_URL}
+      TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN}
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-replace-this-secret-before-production}
       OWNER_NAME: ${OWNER_NAME:-Administrador}
@@ -47,6 +31,5 @@ services:
       - backend_data:/app/data
 
 volumes:
-  postgres_data:
   redis_data:
   backend_data:
