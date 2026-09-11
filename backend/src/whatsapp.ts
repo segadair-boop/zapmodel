@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState, type WASocket, type WAMessage } from '@whiskeysockets/baileys';
+import makeWASocket, { DisconnectReason, downloadMediaMessage, fetchLatestBaileysVersion, useMultiFileAuthState, type WASocket, type WAMessage } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import pino from 'pino';
 
@@ -211,6 +211,7 @@ export async function connectSession(sessionId: string) {
       const body = getBody(message);
       if (!body && !message.message) continue;
       const peer = await resolvePeer(sock, message);
+      const media = await extractMedia(message);
       await sink.onMessage?.({
         sessionId,
         remoteJid,
@@ -220,11 +221,44 @@ export async function connectSession(sessionId: string) {
         body,
         fromMe: Boolean(message.key.fromMe),
         externalId: message.key.id || undefined,
+        ...(media ? { media } : {}),
         raw: message
       });
     }
   });
 }
+
+const MEDIA_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'video/mp4': 'mp4',
+  'audio/ogg': 'ogg',
+  'audio/mpeg': 'mp3',
+  'application/pdf': 'pdf'
+};
+
+/** Baixa mídia recebida (imagem/vídeo/áudio/documento/figurinha). Texto permanece intacto. */
+async function extractMedia(message: WAMessage): Promise<{ buffer: Buffer; mimeType: string; fileName: string } | null> {
+  const m: any = message.message;
+  if (!m) return null;
+  const node =
+    m.imageMessage || m.videoMessage || m.audioMessage || m.documentMessage || m.stickerMessage ||
+    m.documentWithCaptionMessage?.message?.documentMessage || null;
+  if (!node) return null;
+  try {
+    const buffer = (await downloadMediaMessage(message, 'buffer', {}, { logger, reuploadRequest: undefined as any })) as Buffer;
+    if (!buffer?.length) return null;
+    const mimeType = String(node.mimetype || 'application/octet-stream').split(';')[0]!;
+    const ext = MEDIA_EXTENSIONS[mimeType] || mimeType.split('/')[1] || 'bin';
+    const fileName = String(node.fileName || node.title || `arquivo-${Date.now()}.${ext}`);
+    return { buffer, mimeType, fileName };
+  } catch (err) {
+    logger.error({ err }, 'falha ao baixar mídia recebida');
+    return null;
+  }
+}
+
 
 export async function disconnectSession(sessionId: string, logout = false) {
   const sock = sockets.get(sessionId);
