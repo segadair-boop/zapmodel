@@ -1,100 +1,66 @@
-# ZapModel Backend
+# ZapModel — Worker Persistente
 
-Backend persistente do ZapModel. Ele deve rodar 24h em VPS/servidor/container; não use uma função serverless para a sessão do WhatsApp.
+Worker 24h do ZapModel para funções que exigem processo contínuo, especialmente WhatsApp via Baileys e Socket.IO. O frontend e os CRUDs principais usam diretamente o Lovable Cloud/Supabase; este serviço fica separado no Railway.
 
-## Serviços
+## Arquitetura
 
-- Node.js 22 + TypeScript
-- Turso (libSQL/SQLite) + Prisma
-- `@prisma/adapter-libsql` para conexão remota com o Turso
-- Socket.IO para atualização em tempo real
-- Baileys para WhatsApp Web
-- Uploads persistentes
-- Campanhas e agendamentos processados continuamente
-- JWT e perfis OWNER/ADMIN/AGENT
-- API externa por token
-- Auditoria
+- Node.js 22 + TypeScript + Express
+- Baileys para sessão do WhatsApp
+- Socket.IO para eventos em tempo real
+- Lovable Cloud/Supabase para autenticação e persistência
+- RLS do Supabase aplicado também às requisições do worker
+- Conta técnica autenticada para eventos recebidos em background
+- Uploads e sessão Baileys em `/app/data`
 
-## Criar o banco no Turso
+O worker não usa `DATABASE_URL`, Prisma no runtime, JWT próprio nem service role no frontend.
 
-Crie um banco Turso e obtenha a URL e o token de autenticação. As variáveis usadas pelo backend são:
+## Variáveis de produção
 
 ```env
-TURSO_DATABASE_URL=libsql://SEU-BANCO-SUA-ORG.turso.io
-TURSO_AUTH_TOKEN=SEU_TOKEN
+NODE_ENV=production
+PORT=8080
+FRONTEND_URL=https://zapmodel.lovable.app
+SUPABASE_URL=https://SEU-PROJETO.supabase.co
+SUPABASE_PUBLISHABLE_KEY=CHAVE_PUBLICAVEL
+WORKER_EMAIL=CONTA_TECNICA
+WORKER_PASSWORD=SENHA_TECNICA
+WA_AUTH_DIR=/app/data/wa-auth
+UPLOAD_DIR=/app/data/uploads
+LOG_LEVEL=info
 ```
 
-O backend executa `prisma/turso-init.sql` no primeiro start usando `src/init-turso.ts`. Os comandos usam `CREATE TABLE/INDEX IF NOT EXISTS`, portanto podem ser executados novamente sem apagar os dados existentes.
+Os valores reais da conta técnica ficam exclusivamente nas variáveis privadas do Railway e nunca devem ser commitados.
 
-## Subir com Docker
+## Endpoints mantidos no worker
 
-Na raiz do repositório:
+- `GET /api/health`
+- `GET/POST /api/whatsapp`
+- `POST /api/whatsapp/:id/connect`
+- `POST /api/whatsapp/:id/disconnect`
+- `DELETE /api/whatsapp/:id`
+- `GET/POST /api/tickets/:id/messages`
+- `POST /api/campaigns/:id/start`
+- `POST /api/files`
+- `POST /api/v1/messages/send`
+
+As rotas autenticadas recebem o access token do Supabase em `Authorization: Bearer ...`. O worker valida a conta e executa as consultas respeitando RLS.
+
+## Healthcheck
 
 ```bash
-cp backend/.env.example .env
-# configure TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, JWT_SECRET,
-# OWNER_EMAIL e OWNER_PASSWORD no .env
-docker compose up -d --build
+curl https://SEU-WORKER/api/health
 ```
 
-O container executa nesta ordem:
+Com a conta técnica autenticada e o Lovable Cloud acessível, a resposta deve indicar:
 
-1. inicialização/validação do schema no Turso;
-2. seed do proprietário e filas iniciais;
-3. inicialização da API e do serviço WhatsApp.
-
-Backend: `http://SEU_SERVIDOR:8080`
-
-Teste:
-
-```bash
-curl http://localhost:8080/api/health
+```json
+{"ok":true,"service":"zapmodel-worker","database":"lovable-cloud"}
 ```
 
-Quando a conexão com o Turso estiver correta, a resposta exibirá `database: "turso"`.
+## Railway
 
-## Primeiro acesso
-
-O usuário proprietário é criado a partir de `OWNER_NAME`, `OWNER_EMAIL` e `OWNER_PASSWORD`.
-
-## WhatsApp
-
-1. Entre no sistema como OWNER/ADMIN.
-2. Crie uma conexão em Conexões.
-3. O backend abre uma sessão Baileys e retorna o QR Code.
-4. Escaneie em WhatsApp > Aparelhos conectados.
-5. As credenciais ficam persistidas no volume `backend_data` em `/app/data/wa-auth`.
+Use o diretório `/backend` como Root Directory e `Dockerfile` como builder. O serviço deve permanecer ativo continuamente. Para uso real do WhatsApp, monte armazenamento persistente em `/app/data`; isso preserva credenciais Baileys e uploads entre redeploys.
 
 ## Frontend
 
-Configure `VITE_API_URL` apontando para a URL pública HTTPS do backend, por exemplo:
-
-```env
-VITE_API_URL=https://api.seudominio.com
-```
-
-No proxy HTTPS, libere WebSocket para Socket.IO e encaminhe `/uploads` e `/api` ao backend.
-
-## Desenvolvimento local do schema
-
-O Prisma continua configurado como SQLite local no arquivo `schema.prisma`, conforme o fluxo recomendado para Turso. Para alterações futuras de modelos, valide localmente com:
-
-```bash
-npm run db:push
-npx prisma generate
-```
-
-Depois atualize `prisma/turso-init.sql` ou gere/aplique uma migração compatível no banco remoto.
-
-## Produção
-
-Antes de uso real:
-
-- troque todas as senhas e secrets de exemplo;
-- mantenha `TURSO_AUTH_TOKEN` somente no backend;
-- use HTTPS;
-- restrinja firewall;
-- mantenha backup/exportação do banco Turso e do volume `backend_data`;
-- defina CORS (`FRONTEND_URL`) com o domínio exato do frontend;
-- monitore logs e espaço em disco;
-- respeite os termos e políticas do WhatsApp/Meta para mensagens e campanhas.
+O frontend continua publicado em `https://zapmodel.lovable.app`. A variável `VITE_API_URL` deve apontar somente para este worker Railway. Os módulos comuns acessam o Lovable Cloud diretamente e não dependem do worker.
