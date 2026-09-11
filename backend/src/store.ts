@@ -170,27 +170,36 @@ export async function persistIncomingMessage(event: IncomingMessageEvent): Promi
     if (existingMessage.data) return null;
   }
 
+  // pushName em mensagens fromMe é o nome da própria conta conectada,
+  // portanto nunca deve ser usado como nome do contato.
+  const contactName = event.fromMe ? event.number || undefined : event.pushName || event.number || undefined;
+
   const contact = await findOrCreateContact(db, session.companyId, {
     number: event.number,
     whatsappJid: event.whatsappJid,
-    name: event.pushName || event.number || undefined
+    name: contactName
   });
 
   const ticket = await findOrCreateTicket(db, session.companyId, contact.id, event.sessionId);
+
+  const body = event.body || (event.mediaUrl ? event.media?.fileName || 'Arquivo' : '');
 
   const inserted = await db
     .from('Message')
     .insert({
       id: newId(),
       ticketId: ticket.id,
-      body: event.body,
+      body,
       fromMe: event.fromMe,
       externalId: event.externalId ?? null,
+      mediaUrl: event.mediaUrl ?? null,
+      mediaType: event.mediaType ?? null,
       ack: event.fromMe ? 1 : 0,
       updatedAt: nowIso()
     })
     .select('*')
     .single();
+
 
   if (inserted.error) {
     // O mesmo externalId também pode chegar em paralelo. A constraint única
@@ -202,7 +211,7 @@ export async function persistIncomingMessage(event: IncomingMessageEvent): Promi
   const { error: ticketError } = await db
     .from('Ticket')
     .update({
-      lastMessage: event.body,
+      lastMessage: body,
       unread: event.fromMe ? ticket.unread || 0 : (ticket.unread || 0) + 1,
       sessionId: event.sessionId,
       status: 'OPEN',
