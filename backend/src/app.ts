@@ -27,8 +27,22 @@ import {
 const app = express();
 const server = http.createServer(app);
 
-const origins = (process.env.FRONTEND_URL || '').split(',').map(v => v.trim()).filter(Boolean);
-const corsOptions = { origin: origins, credentials: true };
+const configuredOrigins = (process.env.FRONTEND_URL || '')
+  .split(',')
+  .map(v => v.trim())
+  .filter(Boolean);
+const defaultOrigins = [
+  'https://zapmodel.lovable.app',
+  'https://id-preview--37c7559c-ca7c-4862-b0cb-612b1262cbd0.lovable.app'
+];
+const allowedOrigins = new Set([...configuredOrigins, ...defaultOrigins]);
+const corsOptions: cors.CorsOptions = {
+  credentials: true,
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+    callback(new Error('Origem não autorizada'));
+  }
+};
 const io = new SocketIOServer(server, { cors: corsOptions });
 
 const uploadDir = process.env.UPLOAD_DIR || path.resolve('data/uploads');
@@ -44,7 +58,6 @@ const fail = (res: Response, error: unknown, status = 400) =>
 
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
-app.use('/uploads', express.static(uploadDir));
 
 /* ---------------------------- health ---------------------------- */
 
@@ -122,6 +135,8 @@ app.delete('/api/whatsapp/:id', requireAuth(), requireAdmin, async (req: AuthedR
     const id = param(req, 'id');
     const row = await getSessionById(req.db!, id);
     if (!row) return res.status(404).json({ error: 'Conexão não encontrada' });
+    const linked = await req.db!.from('Ticket').select('id', { count: 'exact', head: true }).eq('sessionId', id);
+    if ((linked.count || 0) > 0) return res.status(409).json({ error: 'Esta conexão possui atendimentos vinculados. Desconecte-a em vez de excluir.' });
     await disconnectSession(id, true);
     const { error } = await req.db!.from('WhatsAppSession').delete().eq('id', id);
     if (error) throw error;
@@ -135,37 +150,26 @@ app.delete('/api/whatsapp/:id', requireAuth(), requireAdmin, async (req: AuthedR
 
 app.get('/api/tickets/:id/messages', requireAuth(), async (req: AuthedRequest, res) => {
   const id = param(req, 'id');
-  const { data, error } = await req
-    .db!.from('Message')
-    .select('*')
-    .eq('ticketId', id)
-    .order('createdAt', { ascending: true });
+  const ticket = await req.db!.from('Ticket').select('id').eq('id', id).maybeSingle();
+  if (ticket.error) return fail(res, ticket.error, 500);
+  if (!ticket.data) return res.status(404).json({ error: 'Atendimento não encontrado' });
+  const { data, error } = await req.db!.from('Message').select('*').eq('ticketId', id).order('createdAt', { ascending: true });
   if (error) return fail(res, error, 500);
-  await req.db!.from('Ticket').update({ unread: 0 }).eq('id', id);
+  await req.db!.from('Ticket').update({ unread: 0, updatedAt: nowIso() }).eq('id', id);
   res.json(data || []);
 });
 
 app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), async (req: AuthedRequest, res) => {
   try {
     const id = param(req, 'id');
-    const ticket = await req
-      .db!.from('Ticket')
-      .select('id,sessionId,contactId,companyId')
-      .eq('id', id)
-      .maybeSingle();
+    const ticket = await req.db!.from('Ticket').select('id,sessionId,contactId,companyId').eq('id', id).maybeSingle();
     if (ticket.error) throw ticket.error;
     if (!ticket.data) return res.status(404).json({ error: 'Atendimento não encontrado' });
 
     const sessionId = ticket.data.sessionId as string | null;
-    if (!sessionId || !isSessionConnected(sessionId)) {
-      return res.status(409).json({ error: 'WhatsApp não está conectado neste atendimento' });
-    }
+    if (!sessionId || !isSessionConnected(sessionId)) return res.status(409).json({ error: 'WhatsApp não está conectado neste atendimento' });
 
-    const contact = await req
-      .db!.from('Contact')
-      .select('number,whatsappJid')
-      .eq('id', ticket.data.contactId)
-      .single();
+    const contact = await req.db!.from('Contact').select('number,whatsappJid').eq('id', ticket.data.contactId).single();
     if (contact.error) throw contact.error;
     const target = { number: contact.data.number as string | null, whatsappJid: contact.data.whatsappJid as string | null };
 
@@ -176,17 +180,10 @@ app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), asyn
     let resolvedPn: string | null = null;
 
     if (req.file) {
-      const sent = await sendMedia(
-        sessionId,
-        target,
-        await fs.readFile(req.file.path),
-        req.file.mimetype,
-        req.file.originalname,
-        text || undefined
-      );
+      const sent = await sendMedia(sessionId, target, await fs.readFile(req.file.path), req.file.mimetype, req.file.originalname, text || undefined);
       externalId = (sent.result as any)?.key?.id;
       resolvedPn = sent.resolvedPn;
-      mediaUrl = `/uploads/${path.basename(req.file.path)}`;
+      mediaUrl = `/api/files/raw/${path.basename(req.file.path)}`;
       mediaType = req.file.mimetype;
     } else {
       if (!text) return res.status(400).json({ error: 'Mensagem vazia' });
@@ -195,37 +192,24 @@ app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), asyn
       resolvedPn = sent.resolvedPn;
     }
 
-    // autocorreção de contatos legados: LID resolvido para número real
     if (resolvedPn && resolvedPn !== target.number) {
-      await req
-        .db!.from('Contact')
-        .update({ number: resolvedPn, updatedAt: nowIso() })
-        .eq('id', ticket.data.contactId);
+      await req.db!.from('Contact').update({ number: resolvedPn, updatedAt: nowIso() }).eq('id', ticket.data.contactId);
     }
 
-
-    const inserted = await req
-      .db!.from('Message')
-      .insert({
-        id: newId(),
-        ticketId: id,
-        body: text || req.file?.originalname || '',
-        fromMe: true,
-        externalId: externalId ?? null,
-        mediaUrl,
-        mediaType,
-        userId: req.auth!.id,
-        updatedAt: nowIso()
-      })
-      .select('*')
-      .single();
+    const inserted = await req.db!.from('Message').insert({
+      id: newId(),
+      ticketId: id,
+      body: text || req.file?.originalname || '',
+      fromMe: true,
+      externalId: externalId ?? null,
+      mediaUrl,
+      mediaType,
+      userId: req.auth!.id,
+      updatedAt: nowIso()
+    }).select('*').single();
     if (inserted.error) throw inserted.error;
 
-    await req
-      .db!.from('Ticket')
-      .update({ lastMessage: inserted.data.body, status: 'OPEN', updatedAt: nowIso() })
-      .eq('id', id);
-
+    await req.db!.from('Ticket').update({ lastMessage: inserted.data.body, status: 'OPEN', updatedAt: nowIso() }).eq('id', id);
     io.to(req.auth!.companyId).emit('message:created', { ticketId: id, message: inserted.data });
     res.status(201).json(inserted.data);
   } catch (e) {
@@ -241,73 +225,49 @@ app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: Au
     const campaign = await req.db!.from('Campaign').select('*').eq('id', id).maybeSingle();
     if (campaign.error) throw campaign.error;
     if (!campaign.data) return res.status(404).json({ error: 'Campanha não encontrada' });
+    if (campaign.data.status === 'RUNNING') return res.status(409).json({ error: 'Esta campanha já está em execução' });
 
-    const session = await req
-      .db!.from('WhatsAppSession')
-      .select('id')
-      .eq('companyId', req.auth!.companyId)
-      .eq('status', 'CONNECTED')
-      .limit(1)
-      .maybeSingle();
+    const session = await req.db!.from('WhatsAppSession').select('id').eq('companyId', req.auth!.companyId).eq('status', 'CONNECTED').limit(1).maybeSingle();
     const sessionId = session.data?.id as string | undefined;
-    if (!sessionId || !isSessionConnected(sessionId)) {
-      return res.status(409).json({ error: 'Nenhuma conexão de WhatsApp disponível' });
-    }
+    if (!sessionId || !isSessionConnected(sessionId)) return res.status(409).json({ error: 'Nenhuma conexão de WhatsApp disponível' });
 
-    const targets = await req
-      .db!.from('CampaignContact')
-      .select('contactId,status')
-      .eq('campaignId', id)
-      .eq('status', 'PENDING');
+    const targets = await req.db!.from('CampaignContact').select('contactId,status').eq('campaignId', id).eq('status', 'PENDING');
     if (targets.error) throw targets.error;
+    if (!targets.data?.length) return res.status(400).json({ error: 'A campanha não possui destinatários pendentes' });
 
-    await req
-      .db!.from('Campaign')
-      .update({ status: 'RUNNING', startedAt: nowIso(), updatedAt: nowIso() })
-      .eq('id', id);
-    res.json({ ok: true, total: targets.data?.length || 0 });
+    await req.db!.from('Campaign').update({ status: 'RUNNING', startedAt: nowIso(), finishedAt: null, updatedAt: nowIso() }).eq('id', id);
+    res.json({ ok: true, total: targets.data.length });
 
+    const companyId = req.auth!.companyId;
     void (async () => {
       for (const target of targets.data || []) {
         try {
-          const contact = await req
-            .db!.from('Contact')
-            .select('name,number,whatsappJid')
-            .eq('id', target.contactId)
-            .single();
+          const db = await background();
+          const contact = await db.from('Contact').select('name,number,whatsappJid').eq('id', target.contactId).single();
           if (contact.error) throw contact.error;
           const body = String(campaign.data.message || '').replace(/\{\{nome\}\}/gi, contact.data.name || '');
-          const sent = await sendText(
-            sessionId,
-            { number: contact.data.number, whatsappJid: contact.data.whatsappJid },
-            body
-          );
+          const sent = await sendText(sessionId, { number: contact.data.number, whatsappJid: contact.data.whatsappJid }, body);
           if (sent.resolvedPn && sent.resolvedPn !== contact.data.number) {
-            await req
-              .db!.from('Contact')
-              .update({ number: sent.resolvedPn, updatedAt: nowIso() })
-              .eq('id', target.contactId);
+            await db.from('Contact').update({ number: sent.resolvedPn, updatedAt: nowIso() }).eq('id', target.contactId);
           }
-
-          await req
-            .db!.from('CampaignContact')
-            .update({ status: 'SENT', error: null })
-            .eq('campaignId', id)
-            .eq('contactId', target.contactId);
+          await db.from('CampaignContact').update({ status: 'SENT', error: null }).eq('campaignId', id).eq('contactId', target.contactId);
         } catch (err: any) {
-          await req
-            .db!.from('CampaignContact')
-            .update({ status: 'FAILED', error: err?.message || 'Falha no envio' })
-            .eq('campaignId', id)
-            .eq('contactId', target.contactId);
+          try {
+            const db = await background();
+            await db.from('CampaignContact').update({ status: 'FAILED', error: err?.message || 'Falha no envio' }).eq('campaignId', id).eq('contactId', target.contactId);
+          } catch (logErr) {
+            console.error('[worker] falha ao registrar erro de campanha', logErr);
+          }
         }
         await new Promise(r => setTimeout(r, 2500));
       }
-      await req
-        .db!.from('Campaign')
-        .update({ status: 'FINISHED', finishedAt: nowIso(), updatedAt: nowIso() })
-        .eq('id', id);
-      io.to(req.auth!.companyId).emit('campaign:finished', { id });
+      try {
+        const db = await background();
+        await db.from('Campaign').update({ status: 'FINISHED', finishedAt: nowIso(), updatedAt: nowIso() }).eq('id', id);
+        io.to(companyId).emit('campaign:finished', { id });
+      } catch (err) {
+        console.error('[worker] falha ao finalizar campanha', err);
+      }
     })();
   } catch (e) {
     fail(res, e, 500);
@@ -319,22 +279,34 @@ app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: Au
 app.post('/api/files', requireAuth(), upload.single('file'), async (req: AuthedRequest, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Arquivo obrigatório' });
-    const { data, error } = await req
-      .db!.from('FileAsset')
-      .insert({
-        id: newId(),
-        companyId: req.auth!.companyId,
-        name: req.file.originalname,
-        path: `/uploads/${path.basename(req.file.path)}`,
-        mimeType: req.file.mimetype,
-        size: req.file.size
-      })
-      .select('*')
-      .single();
+    const { data, error } = await req.db!.from('FileAsset').insert({
+      id: newId(),
+      companyId: req.auth!.companyId,
+      name: req.file.originalname,
+      path: path.basename(req.file.path),
+      mimeType: req.file.mimetype,
+      size: req.file.size
+    }).select('*').single();
     if (error) throw error;
-    res.status(201).json(data);
+    res.status(201).json({ ...data, downloadUrl: `/api/files/${data.id}/download` });
   } catch (e) {
     fail(res, e, 500);
+  }
+});
+
+app.get('/api/files/:id/download', requireAuth(), async (req: AuthedRequest, res) => {
+  try {
+    const id = param(req, 'id');
+    const asset = await req.db!.from('FileAsset').select('*').eq('id', id).maybeSingle();
+    if (asset.error) throw asset.error;
+    if (!asset.data) return res.status(404).json({ error: 'Arquivo não encontrado' });
+    const filePath = path.join(uploadDir, path.basename(String(asset.data.path || '')));
+    await fs.access(filePath);
+    res.type(asset.data.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(asset.data.name)}`);
+    res.sendFile(filePath);
+  } catch (e) {
+    fail(res, e, 404);
   }
 });
 
@@ -342,42 +314,70 @@ app.post('/api/files', requireAuth(), upload.single('file'), async (req: AuthedR
 
 app.post('/api/v1/messages/send', async (req, res) => {
   try {
-    const header = req.headers.authorization;
-    if (!header?.startsWith('Bearer ')) return res.status(401).json({ error: 'Token obrigatório' });
-    const tokenHash = crypto.createHash('sha256').update(header.slice(7)).digest('hex');
+    const authHeader = req.headers.authorization;
+    const xApiKey = Array.isArray(req.headers['x-api-key']) ? req.headers['x-api-key'][0] : req.headers['x-api-key'];
+    const plainToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : String(xApiKey || '');
+    if (!plainToken) return res.status(401).json({ error: 'Token obrigatório em Authorization: Bearer ou X-API-Key' });
+    const tokenHash = crypto.createHash('sha256').update(plainToken).digest('hex');
 
     const db = await background();
-    const token = await db
-      .from('ApiToken')
-      .select('id,companyId,active')
-      .eq('tokenHash', tokenHash)
-      .maybeSingle();
+    const token = await db.from('ApiToken').select('id,companyId,active').eq('tokenHash', tokenHash).maybeSingle();
     if (token.error) throw token.error;
     if (!token.data?.active) return res.status(401).json({ error: 'Token inválido' });
 
     const number = String(req.body?.number || '').replace(/\D/g, '');
-    const body = String(req.body?.body || '').trim();
-    if (!number || !body) return res.status(400).json({ error: 'Informe number e body' });
+    const body = String(req.body?.body ?? req.body?.message ?? '').trim();
+    if (!number || !body) return res.status(400).json({ error: 'Informe number e body (ou message)' });
 
-    const session = await db
-      .from('WhatsAppSession')
-      .select('id')
-      .eq('companyId', token.data.companyId)
-      .eq('status', 'CONNECTED')
-      .limit(1)
-      .maybeSingle();
+    const session = await db.from('WhatsAppSession').select('id').eq('companyId', token.data.companyId).eq('status', 'CONNECTED').limit(1).maybeSingle();
     const sessionId = session.data?.id as string | undefined;
-    if (!sessionId || !isSessionConnected(sessionId)) {
-      return res.status(409).json({ error: 'WhatsApp não está conectado' });
-    }
+    if (!sessionId || !isSessionConnected(sessionId)) return res.status(409).json({ error: 'WhatsApp não está conectado' });
 
     const sent = await sendText(sessionId, { number }, body);
     res.status(201).json({ ok: true, externalId: (sent.result as any)?.key?.id ?? null });
-
   } catch (e) {
     fail(res, e, 500);
   }
 });
+
+/* ---------------------- agendamentos reais ---------------------- */
+
+let scheduleBusy = false;
+async function processSchedules() {
+  if (scheduleBusy) return;
+  scheduleBusy = true;
+  try {
+    const db = await background();
+    const due = await db
+      .from('Schedule')
+      .select('id,body,contactNumber,companyId,scheduledAt')
+      .is('sentAt', null)
+      .lte('scheduledAt', nowIso())
+      .order('scheduledAt', { ascending: true })
+      .limit(20);
+    if (due.error) throw due.error;
+
+    for (const item of due.data || []) {
+      try {
+        const session = await db.from('WhatsAppSession').select('id').eq('companyId', item.companyId).eq('status', 'CONNECTED').limit(1).maybeSingle();
+        const sessionId = session.data?.id as string | undefined;
+        if (!sessionId || !isSessionConnected(sessionId)) continue;
+        const number = String(item.contactNumber || '').replace(/\D/g, '');
+        const body = String(item.body || '').trim();
+        if (!number || !body) continue;
+        await sendText(sessionId, { number }, body);
+        await db.from('Schedule').update({ sentAt: nowIso(), updatedAt: nowIso() }).eq('id', item.id).is('sentAt', null);
+        io.to(item.companyId).emit('schedule:sent', { id: item.id });
+      } catch (err) {
+        console.error('[worker] falha em agendamento', item.id, err);
+      }
+    }
+  } catch (err) {
+    console.error('[worker] falha ao processar agendamentos', err);
+  } finally {
+    scheduleBusy = false;
+  }
+}
 
 /* ------------------------- eventos Baileys ---------------------- */
 
@@ -428,10 +428,15 @@ async function bootstrap() {
     const profile = await backgroundProfile();
     console.log(`[worker] conta técnica ativa: ${profile.email} (${profile.role})`);
     const db = await background();
-    const { data } = await db.from('WhatsAppSession').select('id').eq('status', 'CONNECTED');
+    const { data, error } = await db
+      .from('WhatsAppSession')
+      .select('id,status')
+      .in('status', ['CONNECTED', 'CONNECTING', 'QRCODE', 'ERROR']);
+    if (error) throw error;
     for (const row of data || []) {
-      connectSession(row.id).catch(err => console.error('[worker] reconexão falhou', err));
+      connectSession(row.id).catch(err => console.error('[worker] reconexão falhou', row.id, err));
     }
+    await processSchedules();
   } catch (err) {
     console.error('[worker] conta técnica indisponível:', err);
   }
@@ -440,4 +445,5 @@ async function bootstrap() {
 server.listen(port, () => {
   console.log(`[worker] ouvindo na porta ${port}`);
   void bootstrap();
+  setInterval(() => void processSchedules(), 30_000).unref();
 });
