@@ -73,7 +73,29 @@ function RootShell({ children }: { children: ReactNode }) {
   return <html lang="pt-BR"><head><HeadContent /></head><body>{children}<Scripts /></body></html>;
 }
 
+function LoginRegisterButton() {
+  useEffect(() => {
+    const install = () => {
+      if (location.pathname !== '/') return;
+      const card = document.querySelector('.login-card');
+      if (!card || card.querySelector('[data-register-button]')) return;
+      const link = document.createElement('a');
+      link.href = '/signup';
+      link.dataset.registerButton = 'true';
+      link.className = 'secondary-btn login-btn register-login-btn';
+      link.textContent = 'Cadastrar';
+      const note = card.querySelector('.login-note');
+      if (note) card.insertBefore(link, note); else card.appendChild(link);
+    };
+    install();
+    const observer = new MutationObserver(install);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+  return null;
+}
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
-  return <QueryClientProvider client={queryClient}><Outlet /></QueryClientProvider>;
+  return <QueryClientProvider client={queryClient}><LoginRegisterButton/><Outlet /></QueryClientProvider>;
 }
