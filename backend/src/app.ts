@@ -23,6 +23,15 @@ import {
   sendText,
   setWhatsAppEventSink
 } from './whatsapp.js';
+import {
+  checkRateLimit,
+  hasValidSignature,
+  isAllowedUpload,
+  sanitizeUploadName,
+  securityHeaders,
+  uploadFileFilter,
+  validateStoredUpload
+} from './security.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -47,17 +56,34 @@ const io = new SocketIOServer(server, { cors: corsOptions });
 
 const uploadDir = process.env.UPLOAD_DIR || path.resolve('data/uploads');
 await fs.mkdir(uploadDir, { recursive: true });
-const upload = multer({ dest: uploadDir, limits: { fileSize: 25 * 1024 * 1024 } });
+const upload = multer({
+  dest: uploadDir,
+  limits: { fileSize: 25 * 1024 * 1024, files: 1 },
+  fileFilter: uploadFileFilter
+});
+
+const MAX_TEXT = 4096;
 
 const param = (req: Request, key: string): string => {
   const value = req.params[key];
   return Array.isArray(value) ? value[0] || '' : value || '';
 };
-const fail = (res: Response, error: unknown, status = 400) =>
-  res.status(status).json({ error: error instanceof Error ? error.message : String(error) });
+const fail = (res: Response, error: unknown, status = 400) => {
+  console.error('[worker] erro', status, error);
+  if (status >= 500) return res.status(status).json({ error: 'Erro interno do serviço.' });
+  return res.status(status).json({ error: error instanceof Error ? error.message : String(error) });
+};
 
+/** Remove o arquivo temporário quando o conteúdo é rejeitado. */
+async function discardUpload(filePath?: string) {
+  if (!filePath) return;
+  await fs.rm(filePath, { force: true }).catch(() => undefined);
+}
+
+app.disable('x-powered-by');
+app.use(securityHeaders);
 app.use(cors(corsOptions));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '256kb' }));
 
 /* ------------------------ health / readiness ---------------------- */
 
@@ -73,8 +99,9 @@ app.get('/api/ready', async (_req, res) => {
     const { error } = await db.from('WhatsAppSession').select('id').limit(1);
     if (error) throw error;
     res.json({ ok: true, service: 'zapmodel-worker', database: 'lovable-cloud', time: nowIso() });
-  } catch (e: any) {
-    res.status(503).json({ ok: false, database: 'lovable-cloud', error: e?.message });
+  } catch (e) {
+    console.error('[worker] readiness falhou', e);
+    res.status(503).json({ ok: false, database: 'lovable-cloud', error: 'Serviço indisponível.' });
   }
 });
 
@@ -98,7 +125,7 @@ app.post('/api/whatsapp', requireAuth(), requireAdmin, async (req: AuthedRequest
       .insert({
         id: newId(),
         companyId: req.auth!.companyId,
-        name: String(req.body?.name || 'WhatsApp'),
+        name: sanitizeUploadName(String(req.body?.name || 'WhatsApp')).slice(0, 80) || 'WhatsApp',
         isDefault: Boolean(req.body?.isDefault),
         status: 'DISCONNECTED',
         updatedAt: nowIso()
@@ -180,21 +207,27 @@ app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), asyn
     if (contact.error) throw contact.error;
     const target = { number: contact.data.number as string | null, whatsappJid: contact.data.whatsappJid as string | null };
 
-    const text = String(req.body?.body || '').trim();
+    const text = String(req.body?.body || '').trim().slice(0, MAX_TEXT);
     let externalId: string | undefined;
     let mediaUrl: string | null = null;
     let mediaType: string | null = null;
     let resolvedPn: string | null = null;
+    const safeFileName = req.file ? sanitizeUploadName(req.file.originalname) : '';
 
     if (req.file) {
-      const sent = await sendMedia(sessionId, target, await fs.readFile(req.file.path), req.file.mimetype, req.file.originalname, text || undefined);
+      const valid = await validateStoredUpload(req.file.path, req.file.mimetype).catch(() => false);
+      if (!valid) {
+        await discardUpload(req.file.path);
+        return res.status(400).json({ error: 'Conteúdo do arquivo não corresponde ao tipo permitido.' });
+      }
+      const sent = await sendMedia(sessionId, target, await fs.readFile(req.file.path), req.file.mimetype, safeFileName, text || undefined);
       externalId = (sent.result as any)?.key?.id;
       resolvedPn = sent.resolvedPn;
       // Registra o arquivo na biblioteca para ter uma URL de download válida.
       const asset = await req.db!.from('FileAsset').insert({
         id: newId(),
         companyId: req.auth!.companyId,
-        name: req.file.originalname,
+        name: safeFileName,
         path: path.basename(req.file.path),
         mimeType: req.file.mimetype,
         size: req.file.size
@@ -217,7 +250,7 @@ app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), asyn
     const inserted = await req.db!.from('Message').insert({
       id: newId(),
       ticketId: id,
-      body: text || req.file?.originalname || '',
+      body: text || safeFileName || '',
       fromMe: true,
       externalId: externalId ?? null,
       mediaUrl,
@@ -341,10 +374,15 @@ app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: Au
 app.post('/api/files', requireAuth(), upload.single('file'), async (req: AuthedRequest, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Arquivo obrigatório' });
+    const valid = await validateStoredUpload(req.file.path, req.file.mimetype).catch(() => false);
+    if (!valid) {
+      await discardUpload(req.file.path);
+      return res.status(400).json({ error: 'Conteúdo do arquivo não corresponde ao tipo permitido.' });
+    }
     const { data, error } = await req.db!.from('FileAsset').insert({
       id: newId(),
       companyId: req.auth!.companyId,
-      name: req.file.originalname,
+      name: sanitizeUploadName(req.file.originalname),
       path: path.basename(req.file.path),
       mimeType: req.file.mimetype,
       size: req.file.size
@@ -365,10 +403,13 @@ app.get('/api/files/:id/download', requireAuth(), async (req: AuthedRequest, res
     const filePath = path.join(uploadDir, path.basename(String(asset.data.path || '')));
     await fs.access(filePath);
     res.type(asset.data.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(asset.data.name)}`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(sanitizeUploadName(String(asset.data.name || 'arquivo')))}`);
     res.sendFile(filePath);
   } catch (e) {
-    fail(res, e, 404);
+    console.error('[worker] falha no download', e);
+    res.status(404).json({ error: 'Arquivo não encontrado' });
   }
 });
 
@@ -381,6 +422,7 @@ app.post('/api/v1/messages/send', async (req, res) => {
     const plainToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : String(xApiKey || '');
     if (!plainToken) return res.status(401).json({ error: 'Token obrigatório em Authorization: Bearer ou X-API-Key' });
     const tokenHash = crypto.createHash('sha256').update(plainToken).digest('hex');
+    if (!checkRateLimit(tokenHash, 60, 60_000)) return res.status(429).json({ error: 'Limite de requisições excedido. Tente novamente em instantes.' });
 
     const db = await background();
     const token = await db.from('ApiToken').select('id,companyId,active').eq('tokenHash', tokenHash).maybeSingle();
@@ -389,7 +431,8 @@ app.post('/api/v1/messages/send', async (req, res) => {
 
     const number = String(req.body?.number || '').replace(/\D/g, '');
     const body = String(req.body?.body ?? req.body?.message ?? '').trim();
-    if (!number || !body) return res.status(400).json({ error: 'Informe number e body (ou message)' });
+    if (number.length < 8 || number.length > 15) return res.status(400).json({ error: 'Informe um number válido com 8 a 15 dígitos' });
+    if (body.length < 1 || body.length > MAX_TEXT) return res.status(400).json({ error: 'Informe body (ou message) com 1 a 4096 caracteres' });
 
     const session = await db.from('WhatsAppSession').select('id').eq('companyId', token.data.companyId).eq('status', 'CONNECTED').limit(1).maybeSingle();
     const sessionId = session.data?.id as string | undefined;
@@ -469,12 +512,18 @@ setWhatsAppEventSink({
   onMessage: async event => {
     try {
       // Mídia recebida vira arquivo na biblioteca com URL de download válida.
-      if (event.media) {
+      const mediaAllowed = event.media
+        ? isAllowedUpload(event.media.mimeType, event.media.fileName) && hasValidSignature(event.media.buffer, event.media.mimeType)
+        : false;
+      if (event.media && !mediaAllowed) {
+        console.error('[worker] mídia recebida rejeitada por tipo/assinatura inválidos');
+      }
+      if (event.media && mediaAllowed) {
         try {
           const db = await background();
           const session = await getSessionById(db, event.sessionId);
           if (session) {
-            const safeName = event.media.fileName.replace(/[^\w.\-]+/g, '_').slice(-80) || 'arquivo';
+            const safeName = sanitizeUploadName(event.media.fileName).replace(/[^\w.\-]+/g, '_').slice(-80) || 'arquivo';
             const storedName = `${newId()}-${safeName}`;
             await fs.writeFile(path.join(uploadDir, storedName), event.media.buffer);
             const asset = await db
@@ -482,7 +531,7 @@ setWhatsAppEventSink({
               .insert({
                 id: newId(),
                 companyId: session.companyId,
-                name: event.media.fileName,
+                name: safeName,
                 path: storedName,
                 mimeType: event.media.mimeType,
                 size: event.media.buffer.length
@@ -521,8 +570,9 @@ io.use(async (socket, next) => {
     if (!resolved) return next(new Error('Sessão inválida'));
     socket.join(resolved.user.companyId);
     next();
-  } catch (err: any) {
-    next(new Error(err?.message || 'Falha na autenticação'));
+  } catch (err) {
+    console.error('[worker] falha na autenticação do socket', err);
+    next(new Error('Falha na autenticação'));
   }
 });
 
@@ -533,7 +583,7 @@ const port = Number(process.env.PORT || 8080);
 async function bootstrap() {
   try {
     const profile = await backgroundProfile();
-    console.log(`[worker] conta técnica ativa: ${profile.email} (${profile.role})`);
+    console.log(`[worker] conta técnica ativa (perfil ${profile.id}, role ${profile.role})`);
     const db = await background();
     const { data, error } = await db
       .from('WhatsAppSession')
