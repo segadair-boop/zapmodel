@@ -45,6 +45,10 @@ Os valores reais da conta técnica ficam exclusivamente nas variáveis privadas 
 
 As rotas autenticadas recebem o access token do Supabase em `Authorization: Bearer ...`. O worker valida a conta e executa as consultas respeitando RLS.
 
+## Compatibilidade de contatos WhatsApp
+
+O worker trata JIDs de telefone (`@s.whatsapp.net`) e também os identificadores LID (`@lid`) usados pelo WhatsApp Multi-Device. Quando o Baileys disponibiliza o mapeamento LID → PN, o número real é recuperado e o contato é autocorrigido, evitando que o identificador interno seja exibido ou usado como telefone.
+
 ## Healthcheck
 
 ```bash
