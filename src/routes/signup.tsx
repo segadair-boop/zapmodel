@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { MessageCircleMore, UserPlus, ArrowLeft } from 'lucide-react';
+import { UserPlus, ArrowLeft } from 'lucide-react';
 import { useState } from 'react';
 
 export const Route = createFileRoute('/signup')({ component: SignupPage });
@@ -20,15 +20,25 @@ function SignupPage() {
     setError(''); setMessage('');
     if (password.length < 8) return setError('A senha deve ter pelo menos 8 caracteres.');
     if (password !== confirm) return setError('As senhas não coincidem.');
-    if (!API) return setError('Cadastro disponível quando o backend de produção estiver conectado.');
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email, password }) });
+      const endpoint = `${API}/api/auth/register`;
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password })
+      });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Não foi possível realizar o cadastro.');
+      if (!res.ok) {
+        if (res.status === 404 && !API) throw new Error('Backend não encontrado. Configure VITE_API_URL com o endereço público do backend para concluir o cadastro.');
+        throw new Error(data.error || 'Não foi possível realizar o cadastro.');
+      }
       setMessage('Cadastro realizado com sucesso. Agora você pode entrar no sistema.');
       setName(''); setEmail(''); setPassword(''); setConfirm('');
-    } catch (e: any) { setError(e.message); } finally { setLoading(false); }
+    } catch (e: any) {
+      const msg = String(e?.message || 'Não foi possível conectar ao servidor.');
+      setError(msg === 'Failed to fetch' ? 'Não foi possível conectar ao backend. Verifique a configuração de VITE_API_URL.' : msg);
+    } finally { setLoading(false); }
   }
 
   return <div className="login-page"><form className="login-card" onSubmit={submit}>
