@@ -237,6 +237,11 @@ app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), asyn
 
 /* --------------------------- campanhas -------------------------- */
 
+// Garante que uma campanha não tenha dois loops de envio simultâneos.
+const runningCampaigns = new Set<string>();
+
+
+
 /** Envia os destinatários PENDING de uma campanha e a finaliza ao terminar. */
 async function runCampaign(campaignId: string, companyId: string, sessionId: string, message: string) {
   if (runningCampaigns.has(campaignId)) return;
