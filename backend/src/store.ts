@@ -211,7 +211,7 @@ export async function persistIncomingMessage(event: IncomingMessageEvent): Promi
   const { error: ticketError } = await db
     .from('Ticket')
     .update({
-      lastMessage: event.body,
+      lastMessage: body,
       unread: event.fromMe ? ticket.unread || 0 : (ticket.unread || 0) + 1,
       sessionId: event.sessionId,
       status: 'OPEN',

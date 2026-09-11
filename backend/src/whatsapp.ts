@@ -13,6 +13,8 @@ export type ConnectionEvent = {
   error?: string;
 };
 
+export type IncomingMedia = { buffer: Buffer; mimeType: string; fileName: string };
+
 export type IncomingMessageEvent = {
   sessionId: string;
   remoteJid: string;
@@ -24,8 +26,14 @@ export type IncomingMessageEvent = {
   body: string;
   fromMe: boolean;
   externalId?: string;
+  /** Mídia baixada do WhatsApp, quando a mensagem for de arquivo. */
+  media?: IncomingMedia;
+  /** Preenchido pelo app após persistir o arquivo na biblioteca. */
+  mediaUrl?: string | null;
+  mediaType?: string | null;
   raw: WAMessage;
 };
+
 
 /** Destino de envio: número real e/ou JID armazenado no contato. */
 export type SendTarget = {
