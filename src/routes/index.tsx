@@ -193,7 +193,7 @@ function Contacts({session}:{session:Session}){
 
 function SimpleCrud({session,title,table,fields}:{session:Session;title:string;table:string;fields:string[]}){
   const r=useData<any[]>(()=>selectAll(table),[],5000);
-  async function add(){const body:any={};for(const f of fields){const v=prompt(`${label(f)}:`);if(v===null)return;body[f]=v.trim()}try{await insertRow(table,{...body,companyId:session.user.companyId});r.reload()}catch(e:any){alert(e.message}}
+  async function add(){const body:any={};for(const f of fields){const v=prompt(`${label(f)}:`);if(v===null)return;body[f]=v.trim()}try{await insertRow(table,{...body,companyId:session.user.companyId});r.reload()}catch(e:any){alert(e.message)}}
   async function del(id:string){try{await deleteRow(table,id);r.reload()}catch(e:any){alert(e.message)}}
   return <div className="stack"><div className="page-actions"><p>Cadastros de {title.toLowerCase()}.</p><button className="primary-btn" onClick={add}><Plus size={16}/>Novo</button></div>{r.error?<Alert text={r.error}/>:null}<section className="panel"><Table heads={[...fields.map(label),""]} rows={r.data.map(row=>[...fields.map(f=>row[f]||"—"),<button className="danger-icon" onClick={()=>del(row.id)}><Trash2 size={16}/></button>])}/></section></div>
 }
