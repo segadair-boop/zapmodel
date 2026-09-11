@@ -1,8 +1,7 @@
 import 'dotenv/config';
 import bcrypt from 'bcryptjs';
-import { PrismaClient, UserRole } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { UserRole } from '@prisma/client';
+import { prisma } from '../src/db.js';
 
 async function main() {
   const email = (process.env.OWNER_EMAIL || 'admin@example.com').toLowerCase();
@@ -18,7 +17,7 @@ async function main() {
   for (const queue of [{ name: 'Comercial', color: '#22c55e' }, { name: 'Suporte', color: '#3b82f6' }, { name: 'Financeiro', color: '#f59e0b' }]) {
     await prisma.queue.upsert({ where: { companyId_name: { companyId: company.id, name: queue.name } }, update: {}, create: { ...queue, companyId: company.id } });
   }
-  console.log(`Seed concluído. Administrador: ${email}`);
+  console.log(`Seed Turso concluído. Administrador: ${email}`);
 }
 
 main().finally(() => prisma.$disconnect());
