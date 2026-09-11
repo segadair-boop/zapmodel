@@ -816,6 +816,7 @@ export type Database = {
       }
       is_app_admin: { Args: never; Returns: boolean }
       is_app_member: { Args: never; Returns: boolean }
+      owner_claimed: { Args: never; Returns: boolean }
     }
     Enums: {
       CampaignStatus:
