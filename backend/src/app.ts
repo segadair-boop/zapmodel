@@ -237,6 +237,66 @@ app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), asyn
 
 /* --------------------------- campanhas -------------------------- */
 
+/** Envia os destinatários PENDING de uma campanha e a finaliza ao terminar. */
+async function runCampaign(campaignId: string, companyId: string, sessionId: string, message: string) {
+  if (runningCampaigns.has(campaignId)) return;
+  runningCampaigns.add(campaignId);
+  try {
+    const db = await background();
+    const targets = await db.from('CampaignContact').select('contactId').eq('campaignId', campaignId).eq('status', 'PENDING');
+    if (targets.error) throw targets.error;
+
+    for (const target of targets.data || []) {
+      try {
+        const contact = await db.from('Contact').select('name,number,whatsappJid').eq('id', target.contactId).single();
+        if (contact.error) throw contact.error;
+        const body = String(message || '').replace(/\{\{nome\}\}/gi, contact.data.name || '');
+        const sent = await sendText(sessionId, { number: contact.data.number, whatsappJid: contact.data.whatsappJid }, body);
+        if (sent.resolvedPn && sent.resolvedPn !== contact.data.number) {
+          await db.from('Contact').update({ number: sent.resolvedPn, updatedAt: nowIso() }).eq('id', target.contactId);
+        }
+        await db.from('CampaignContact').update({ status: 'SENT', error: null }).eq('campaignId', campaignId).eq('contactId', target.contactId);
+      } catch (err: any) {
+        try {
+          await db.from('CampaignContact').update({ status: 'FAILED', error: err?.message || 'Falha no envio' }).eq('campaignId', campaignId).eq('contactId', target.contactId);
+        } catch (logErr) {
+          console.error('[worker] falha ao registrar erro de campanha', logErr);
+        }
+      }
+      await new Promise(r => setTimeout(r, 2500));
+    }
+
+    await db.from('Campaign').update({ status: 'FINISHED', finishedAt: nowIso(), updatedAt: nowIso() }).eq('id', campaignId);
+    io.to(companyId).emit('campaign:finished', { id: campaignId });
+  } catch (err) {
+    console.error('[worker] falha ao processar campanha', campaignId, err);
+  } finally {
+    runningCampaigns.delete(campaignId);
+  }
+}
+
+/** Retoma campanhas RUNNING após reinício e finaliza as que não têm pendências. */
+async function resumeCampaigns() {
+  try {
+    const db = await background();
+    const running = await db.from('Campaign').select('id,companyId,message').eq('status', 'RUNNING');
+    if (running.error) throw running.error;
+    for (const campaign of running.data || []) {
+      const pending = await db.from('CampaignContact').select('contactId', { count: 'exact', head: true }).eq('campaignId', campaign.id).eq('status', 'PENDING');
+      if (!pending.count) {
+        await db.from('Campaign').update({ status: 'FINISHED', finishedAt: nowIso(), updatedAt: nowIso() }).eq('id', campaign.id);
+        continue;
+      }
+      const session = await db.from('WhatsAppSession').select('id').eq('companyId', campaign.companyId).eq('status', 'CONNECTED').limit(1).maybeSingle();
+      const sessionId = session.data?.id as string | undefined;
+      if (!sessionId || !isSessionConnected(sessionId)) continue;
+      void runCampaign(campaign.id, campaign.companyId, sessionId, String(campaign.message || ''));
+    }
+  } catch (err) {
+    console.error('[worker] falha ao retomar campanhas', err);
+  }
+}
+
 app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: AuthedRequest, res) => {
   try {
     const id = param(req, 'id');
@@ -249,58 +309,27 @@ app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: Au
     const sessionId = session.data?.id as string | undefined;
     if (!sessionId || !isSessionConnected(sessionId)) return res.status(409).json({ error: 'Nenhuma conexão de WhatsApp disponível' });
 
-    const targets = await req.db!.from('CampaignContact').select('contactId,status').eq('campaignId', id).eq('status', 'PENDING');
+    const targets = await req.db!.from('CampaignContact').select('contactId', { count: 'exact', head: true }).eq('campaignId', id).eq('status', 'PENDING');
     if (targets.error) throw targets.error;
-    if (!targets.data?.length) return res.status(400).json({ error: 'A campanha não possui destinatários pendentes' });
+    if (!targets.count) return res.status(400).json({ error: 'A campanha não possui destinatários pendentes' });
 
-    // Transição atômica: só um pedido consegue sair do estado atual para RUNNING.
+    // Transição atômica: apenas um pedido consegue sair de DRAFT para RUNNING.
     const claimed = await req.db!
       .from('Campaign')
       .update({ status: 'RUNNING', startedAt: nowIso(), finishedAt: null, updatedAt: nowIso() })
       .eq('id', id)
-      .neq('status', 'RUNNING')
+      .eq('status', 'DRAFT')
       .select('id');
     if (claimed.error) throw claimed.error;
     if (!claimed.data?.length) return res.status(409).json({ error: 'Esta campanha já está em execução' });
 
-    res.json({ ok: true, total: targets.data.length });
-
-    const companyId = req.auth!.companyId;
-
-    void (async () => {
-      for (const target of targets.data || []) {
-        try {
-          const db = await background();
-          const contact = await db.from('Contact').select('name,number,whatsappJid').eq('id', target.contactId).single();
-          if (contact.error) throw contact.error;
-          const body = String(campaign.data.message || '').replace(/\{\{nome\}\}/gi, contact.data.name || '');
-          const sent = await sendText(sessionId, { number: contact.data.number, whatsappJid: contact.data.whatsappJid }, body);
-          if (sent.resolvedPn && sent.resolvedPn !== contact.data.number) {
-            await db.from('Contact').update({ number: sent.resolvedPn, updatedAt: nowIso() }).eq('id', target.contactId);
-          }
-          await db.from('CampaignContact').update({ status: 'SENT', error: null }).eq('campaignId', id).eq('contactId', target.contactId);
-        } catch (err: any) {
-          try {
-            const db = await background();
-            await db.from('CampaignContact').update({ status: 'FAILED', error: err?.message || 'Falha no envio' }).eq('campaignId', id).eq('contactId', target.contactId);
-          } catch (logErr) {
-            console.error('[worker] falha ao registrar erro de campanha', logErr);
-          }
-        }
-        await new Promise(r => setTimeout(r, 2500));
-      }
-      try {
-        const db = await background();
-        await db.from('Campaign').update({ status: 'FINISHED', finishedAt: nowIso(), updatedAt: nowIso() }).eq('id', id);
-        io.to(companyId).emit('campaign:finished', { id });
-      } catch (err) {
-        console.error('[worker] falha ao finalizar campanha', err);
-      }
-    })();
+    res.json({ ok: true, total: targets.count });
+    void runCampaign(id, req.auth!.companyId, sessionId, String(campaign.data.message || ''));
   } catch (e) {
     fail(res, e, 500);
   }
 });
+
 
 /* --------------------------- arquivos --------------------------- */
 
