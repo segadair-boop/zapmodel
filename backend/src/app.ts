@@ -544,6 +544,8 @@ async function bootstrap() {
       connectSession(row.id).catch(err => console.error('[worker] reconexão falhou', row.id, err));
     }
     await processSchedules();
+    await resumeCampaigns();
+
   } catch (err) {
     console.error('[worker] conta técnica indisponível:', err);
   }
