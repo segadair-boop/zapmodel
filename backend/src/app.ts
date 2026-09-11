@@ -371,8 +371,9 @@ app.post('/api/v1/messages/send', async (req, res) => {
       return res.status(409).json({ error: 'WhatsApp não está conectado' });
     }
 
-    const sent: any = await sendText(sessionId, number, body);
-    res.status(201).json({ ok: true, externalId: sent?.key?.id ?? null });
+    const sent = await sendText(sessionId, { number }, body);
+    res.status(201).json({ ok: true, externalId: (sent.result as any)?.key?.id ?? null });
+
   } catch (e) {
     fail(res, e, 500);
   }
