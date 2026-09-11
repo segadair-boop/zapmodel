@@ -154,7 +154,12 @@ export async function persistIncomingMessage(event: IncomingMessageEvent): Promi
   const session = await getSessionById(db, event.sessionId);
   if (!session) return null;
 
-  const contact = await findOrCreateContact(db, session.companyId, event.number, event.pushName || event.number);
+  const contact = await findOrCreateContact(db, session.companyId, {
+    number: event.number,
+    whatsappJid: event.whatsappJid,
+    name: event.pushName || event.number || undefined
+  });
+
   const ticket = await findOrCreateTicket(db, session.companyId, contact.id, event.sessionId);
 
   const inserted = await db
