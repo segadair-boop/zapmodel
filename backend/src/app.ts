@@ -570,8 +570,9 @@ io.use(async (socket, next) => {
     if (!resolved) return next(new Error('Sessão inválida'));
     socket.join(resolved.user.companyId);
     next();
-  } catch (err: any) {
-    next(new Error(err?.message || 'Falha na autenticação'));
+  } catch (err) {
+    console.error('[worker] falha na autenticação do socket', err);
+    next(new Error('Falha na autenticação'));
   }
 });
 
@@ -582,7 +583,7 @@ const port = Number(process.env.PORT || 8080);
 async function bootstrap() {
   try {
     const profile = await backgroundProfile();
-    console.log(`[worker] conta técnica ativa: ${profile.email} (${profile.role})`);
+    console.log(`[worker] conta técnica ativa (perfil ${profile.id}, role ${profile.role})`);
     const db = await background();
     const { data, error } = await db
       .from('WhatsAppSession')
