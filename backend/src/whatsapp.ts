@@ -16,13 +16,29 @@ export type ConnectionEvent = {
 export type IncomingMessageEvent = {
   sessionId: string;
   remoteJid: string;
-  number: string;
+  /** JID endereçável do contato (pode ser @lid quando não há PN conhecido). */
+  whatsappJid: string;
+  /** Número real (PN) quando conhecido; null para LIDs não resolvidos. */
+  number: string | null;
   pushName?: string;
   body: string;
   fromMe: boolean;
   externalId?: string;
   raw: WAMessage;
 };
+
+/** Destino de envio: número real e/ou JID armazenado no contato. */
+export type SendTarget = {
+  number?: string | null;
+  whatsappJid?: string | null;
+};
+
+export type SendResult = {
+  result: unknown;
+  /** PN resolvido a partir de um LID, para autocorreção do contato. */
+  resolvedPn: string | null;
+};
+
 
 type EventSink = {
   onConnection?: (event: ConnectionEvent) => Promise<void> | void;
