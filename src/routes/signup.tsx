@@ -1,10 +1,12 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { UserPlus, ArrowLeft } from 'lucide-react';
 import { useState } from 'react';
+import { supabase } from '@/integrations/supabase/client';
+import { db } from '@/lib/db';
 
 export const Route = createFileRoute('/signup')({ component: SignupPage });
 
-const API = String((import.meta as any).env?.VITE_API_URL || '').replace(/\/$/, '');
+const OWNER_EMAIL = 'seg.adair@gmail.com';
 
 function SignupPage() {
   const [name, setName] = useState('');
@@ -20,24 +22,23 @@ function SignupPage() {
     setError(''); setMessage('');
     if (password.length < 8) return setError('A senha deve ter pelo menos 8 caracteres.');
     if (password !== confirm) return setError('As senhas não coincidem.');
+    const normalized = email.trim().toLowerCase();
     setLoading(true);
     try {
-      const endpoint = `${API}/api/auth/register`;
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (res.status === 404 && !API) throw new Error('Backend não encontrado. Configure VITE_API_URL com o endereço público do backend para concluir o cadastro.');
-        throw new Error(data.error || 'Não foi possível realizar o cadastro.');
+      if (normalized === OWNER_EMAIL) {
+        const { data: claimed } = await db.rpc('owner_claimed');
+        if (claimed) throw new Error('Este e-mail é reservado ao proprietário do sistema e já está em uso.');
       }
+      const { error: err } = await supabase.auth.signUp({
+        email: normalized,
+        password,
+        options: { data: { name: name.trim() }, emailRedirectTo: `${window.location.origin}/` },
+      });
+      if (err) throw new Error(err.message);
       setMessage('Cadastro realizado com sucesso. Agora você pode entrar no sistema.');
       setName(''); setEmail(''); setPassword(''); setConfirm('');
     } catch (e: any) {
-      const msg = String(e?.message || 'Não foi possível conectar ao servidor.');
-      setError(msg === 'Failed to fetch' ? 'Não foi possível conectar ao backend. Verifique a configuração de VITE_API_URL.' : msg);
+      setError(String(e?.message || 'Não foi possível realizar o cadastro.'));
     } finally { setLoading(false); }
   }
 
