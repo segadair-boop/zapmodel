@@ -36,53 +36,34 @@ export async function applyConnectionEvent(event: ConnectionEvent): Promise<Sess
 }
 
 type ContactRow = { id: string; name: string; number: string; companyId: string; whatsappJid: string | null };
-
 const isLid = (jid?: string | null) => Boolean(jid && jid.endsWith('@lid'));
 
-/**
- * Localiza por whatsappJid (quando houver) e depois pelo número real.
- * Autocorrige contatos legados criados com os dígitos de um LID.
- */
+/** Localiza por JID e depois por número, autocorrigindo contatos legados. */
 export async function findOrCreateContact(
   db: SupabaseClient,
   companyId: string,
   opts: { number: string | null; whatsappJid: string | null; name?: string }
 ): Promise<ContactRow> {
   const cols = 'id,name,number,companyId,whatsappJid';
+  const normalizedNumber = opts.number ? opts.number.replace(/\D/g, '') : null;
   let found: ContactRow | null = null;
 
   if (opts.whatsappJid) {
-    const byJid = await db
-      .from('Contact')
-      .select(cols)
-      .eq('companyId', companyId)
-      .eq('whatsappJid', opts.whatsappJid)
-      .maybeSingle();
+    const byJid = await db.from('Contact').select(cols).eq('companyId', companyId).eq('whatsappJid', opts.whatsappJid).maybeSingle();
     if (byJid.error) throw byJid.error;
     found = (byJid.data as ContactRow) || null;
   }
 
-  if (!found && opts.number) {
-    const byNumber = await db
-      .from('Contact')
-      .select(cols)
-      .eq('companyId', companyId)
-      .eq('number', opts.number)
-      .maybeSingle();
+  if (!found && normalizedNumber) {
+    const byNumber = await db.from('Contact').select(cols).eq('companyId', companyId).eq('number', normalizedNumber).maybeSingle();
     if (byNumber.error) throw byNumber.error;
     found = (byNumber.data as ContactRow) || null;
   }
 
-  // contato legado gravado com os dígitos do LID
   if (!found && opts.whatsappJid && isLid(opts.whatsappJid)) {
     const lidDigits = opts.whatsappJid.split('@')[0]!.replace(/\D/g, '');
     if (lidDigits) {
-      const legacy = await db
-        .from('Contact')
-        .select(cols)
-        .eq('companyId', companyId)
-        .eq('number', lidDigits)
-        .maybeSingle();
+      const legacy = await db.from('Contact').select(cols).eq('companyId', companyId).eq('number', lidDigits).maybeSingle();
       if (legacy.error) throw legacy.error;
       found = (legacy.data as ContactRow) || null;
     }
@@ -91,9 +72,8 @@ export async function findOrCreateContact(
   if (found) {
     const patch: Record<string, unknown> = {};
     if (opts.whatsappJid && found.whatsappJid !== opts.whatsappJid) patch['whatsappJid'] = opts.whatsappJid;
-    // só sobrescreve o número quando temos um PN real
-    if (opts.number && found.number !== opts.number) patch['number'] = opts.number;
-    if (opts.name && (!found.name || found.name === found.number)) patch['name'] = opts.name;
+    if (normalizedNumber && found.number !== normalizedNumber) patch['number'] = normalizedNumber;
+    if (opts.name && (!found.name || found.name === found.number || isLid(found.whatsappJid))) patch['name'] = opts.name;
     if (Object.keys(patch).length === 0) return found;
     patch['updatedAt'] = nowIso();
     const updated = await db.from('Contact').update(patch).eq('id', found.id).select(cols).single();
@@ -101,13 +81,13 @@ export async function findOrCreateContact(
     return updated.data as ContactRow;
   }
 
-  const fallbackName = opts.name || opts.number || opts.whatsappJid || 'Contato';
+  const fallbackName = opts.name || normalizedNumber || opts.whatsappJid || 'Contato';
   const created = await db
     .from('Contact')
     .insert({
       id: newId(),
       companyId,
-      number: opts.number || opts.whatsappJid || newId(),
+      number: normalizedNumber || opts.whatsappJid || newId(),
       whatsappJid: opts.whatsappJid,
       name: fallbackName,
       updatedAt: nowIso()
@@ -118,13 +98,13 @@ export async function findOrCreateContact(
   return created.data as ContactRow;
 }
 
-
 async function findOrCreateTicket(db: SupabaseClient, companyId: string, contactId: string, sessionId: string) {
   const existing = await db
     .from('Ticket')
     .select('id,status,unread')
     .eq('companyId', companyId)
     .eq('contactId', contactId)
+    .eq('sessionId', sessionId)
     .neq('status', 'CLOSED')
     .order('updatedAt', { ascending: false })
     .limit(1)
@@ -148,11 +128,22 @@ export type PersistedIncoming = {
   message: Record<string, unknown>;
 };
 
-/** Persiste uma mensagem recebida do Baileys usando a conta técnica. */
+/** Persiste mensagem do Baileys com idempotência por externalId. */
 export async function persistIncomingMessage(event: IncomingMessageEvent): Promise<PersistedIncoming | null> {
   const db = await background();
   const session = await getSessionById(db, event.sessionId);
   if (!session) return null;
+
+  if (event.externalId) {
+    const existingMessage = await db
+      .from('Message')
+      .select('id,ticketId')
+      .eq('externalId', event.externalId)
+      .limit(1)
+      .maybeSingle();
+    if (existingMessage.error) throw existingMessage.error;
+    if (existingMessage.data) return null;
+  }
 
   const contact = await findOrCreateContact(db, session.companyId, {
     number: event.number,
