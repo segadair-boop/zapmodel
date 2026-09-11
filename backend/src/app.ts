@@ -9,10 +9,10 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
 import { Server as SocketIOServer } from 'socket.io';
-import { PrismaClient, CampaignStatus, ConnectionStatus, TicketStatus, UserRole } from '@prisma/client';
+import { CampaignStatus, ConnectionStatus, TicketStatus, UserRole } from '@prisma/client';
+import { prisma } from './db.js';
 import { connectSession, disconnectSession, isSessionConnected, sendMedia, sendText, setWhatsAppEventSink } from './whatsapp.js';
 
-const prisma = new PrismaClient();
 const app = express();
 const server = http.createServer(app);
 const origins = (process.env.FRONTEND_URL || '').split(',').map(v => v.trim()).filter(Boolean);
@@ -38,12 +38,12 @@ app.use(cors({ origin:origins.length?origins:true, credentials:true }));
 app.use(express.json({limit:'10mb'}));
 app.use('/uploads',express.static(uploadDir));
 
-app.get('/api/health',async(_req,res)=>{try{await prisma.$queryRaw`SELECT 1`;res.json({ok:true,service:'zapmodel-backend',database:'ok',time:new Date().toISOString()})}catch(e:any){res.status(503).json({ok:false,database:'error',error:e?.message})}});
+app.get('/api/health',async(_req,res)=>{try{await prisma.$queryRaw`SELECT 1`;res.json({ok:true,service:'zapmodel-backend',database:'turso',time:new Date().toISOString()})}catch(e:any){res.status(503).json({ok:false,database:'error',error:e?.message})}});
 app.post('/api/auth/login',async(req,res)=>{const email=String(req.body?.email||'').trim().toLowerCase();const password=String(req.body?.password||'');const user=await prisma.user.findUnique({where:{email},include:{company:true}});if(!user?.active||!(await bcrypt.compare(password,user.passwordHash)))return res.status(401).json({error:'E-mail ou senha inválidos'});res.json({token:signToken(user),user:{id:user.id,name:user.name,email:user.email,role:user.role,companyId:user.companyId,company:user.company}})});
 app.get('/api/auth/me',auth,async(req:AuthedRequest,res)=>res.json(await prisma.user.findFirst({where:{id:req.auth!.sub,companyId:req.auth!.companyId},select:{id:true,name:true,email:true,role:true,active:true,companyId:true}})));
 app.get('/api/dashboard',auth,async(req:AuthedRequest,res)=>{const companyId=req.auth!.companyId;const [open,pending,closed,contacts,messages,sessions,campaigns]=await Promise.all([prisma.ticket.count({where:{companyId,status:TicketStatus.OPEN}}),prisma.ticket.count({where:{companyId,status:TicketStatus.PENDING}}),prisma.ticket.count({where:{companyId,status:TicketStatus.CLOSED}}),prisma.contact.count({where:{companyId}}),prisma.message.count({where:{ticket:{companyId}}}),prisma.whatsAppSession.count({where:{companyId,status:ConnectionStatus.CONNECTED}}),prisma.campaign.count({where:{companyId}})]);res.json({open,pending,closed,contacts,messages,connectedSessions:sessions,campaigns})});
 
-app.get('/api/contacts',auth,async(req:AuthedRequest,res)=>{const q=String(req.query.q||'').trim();res.json(await prisma.contact.findMany({where:{companyId:req.auth!.companyId,...(q?{OR:[{name:{contains:q,mode:'insensitive'}},{number:{contains:q}},{email:{contains:q,mode:'insensitive'}}]}:{})},orderBy:{name:'asc'}}))});
+app.get('/api/contacts',auth,async(req:AuthedRequest,res)=>{const q=String(req.query.q||'').trim();res.json(await prisma.contact.findMany({where:{companyId:req.auth!.companyId,...(q?{OR:[{name:{contains:q}},{number:{contains:q}},{email:{contains:q}}]}:{})},orderBy:{name:'asc'}}))});
 app.post('/api/contacts',auth,async(req:AuthedRequest,res)=>{const name=String(req.body?.name||'').trim(),number=String(req.body?.number||'').replace(/\D/g,'');if(!name||!number)return res.status(400).json({error:'Nome e número são obrigatórios'});const row=await prisma.contact.upsert({where:{companyId_number:{companyId:req.auth!.companyId,number}},update:{name,email:req.body.email||null,notes:req.body.notes||null},create:{name,number,email:req.body.email||null,notes:req.body.notes||null,companyId:req.auth!.companyId}});await audit(req,'UPSERT','Contact',row.id);io.to(req.auth!.companyId).emit('contact:updated',row);res.status(201).json(row)});
 app.patch('/api/contacts/:id',auth,async(req:AuthedRequest,res)=>{const id=param(req,'id'),row=await prisma.contact.findFirst({where:{id,companyId:req.auth!.companyId}});if(!row)return res.status(404).json({error:'Contato não encontrado'});res.json(await prisma.contact.update({where:{id},data:{name:req.body.name??undefined,email:req.body.email??undefined,notes:req.body.notes??undefined}}))});
 app.delete('/api/contacts/:id',auth,async(req:AuthedRequest,res)=>{const id=param(req,'id'),row=await prisma.contact.findFirst({where:{id,companyId:req.auth!.companyId}});if(!row)return res.status(404).json({error:'Contato não encontrado'});await prisma.contact.delete({where:{id}});await audit(req,'DELETE','Contact',id);res.status(204).end()});
