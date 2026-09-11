@@ -191,7 +191,7 @@ export type Database = {
         Insert: {
           active?: boolean
           createdAt?: string
-          id: string
+          id?: string
           name: string
           updatedAt?: string
         }
@@ -718,7 +718,7 @@ export type Database = {
           email: string
           id: string
           name: string
-          passwordHash: string
+          passwordHash?: string
           role?: Database["public"]["Enums"]["UserRole"]
           updatedAt?: string
         }
@@ -792,7 +792,31 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      current_app_role: { Args: never; Returns: string }
+      current_company_id: { Args: never; Returns: string }
+      ensure_profile: {
+        Args: { p_name?: string }
+        Returns: {
+          active: boolean
+          companyId: string
+          createdAt: string
+          email: string
+          id: string
+          name: string
+          passwordHash: string
+          role: Database["public"]["Enums"]["UserRole"]
+          updatedAt: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "User"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      is_app_admin: { Args: never; Returns: boolean }
+      is_app_member: { Args: never; Returns: boolean }
+      owner_claimed: { Args: never; Returns: boolean }
     }
     Enums: {
       CampaignStatus:
