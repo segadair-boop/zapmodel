@@ -161,31 +161,48 @@ app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), asyn
       return res.status(409).json({ error: 'WhatsApp não está conectado neste atendimento' });
     }
 
-    const contact = await req.db!.from('Contact').select('number').eq('id', ticket.data.contactId).single();
+    const contact = await req
+      .db!.from('Contact')
+      .select('number,whatsappJid')
+      .eq('id', ticket.data.contactId)
+      .single();
     if (contact.error) throw contact.error;
+    const target = { number: contact.data.number as string | null, whatsappJid: contact.data.whatsappJid as string | null };
 
     const text = String(req.body?.body || '').trim();
     let externalId: string | undefined;
     let mediaUrl: string | null = null;
     let mediaType: string | null = null;
+    let resolvedPn: string | null = null;
 
     if (req.file) {
-      const sent: any = await sendMedia(
+      const sent = await sendMedia(
         sessionId,
-        contact.data.number,
+        target,
         await fs.readFile(req.file.path),
         req.file.mimetype,
         req.file.originalname,
         text || undefined
       );
-      externalId = sent?.key?.id;
+      externalId = (sent.result as any)?.key?.id;
+      resolvedPn = sent.resolvedPn;
       mediaUrl = `/uploads/${path.basename(req.file.path)}`;
       mediaType = req.file.mimetype;
     } else {
       if (!text) return res.status(400).json({ error: 'Mensagem vazia' });
-      const sent: any = await sendText(sessionId, contact.data.number, text);
-      externalId = sent?.key?.id;
+      const sent = await sendText(sessionId, target, text);
+      externalId = (sent.result as any)?.key?.id;
+      resolvedPn = sent.resolvedPn;
     }
+
+    // autocorreção de contatos legados: LID resolvido para número real
+    if (resolvedPn && resolvedPn !== target.number) {
+      await req
+        .db!.from('Contact')
+        .update({ number: resolvedPn, updatedAt: nowIso() })
+        .eq('id', ticket.data.contactId);
+    }
+
 
     const inserted = await req
       .db!.from('Message')
