@@ -820,6 +820,49 @@ export type Database = {
       is_app_admin: { Args: never; Returns: boolean }
       is_app_member: { Args: never; Returns: boolean }
       owner_claimed: { Args: never; Returns: boolean }
+      set_user_active: {
+        Args: { p_active: boolean; p_user_id: string }
+        Returns: {
+          active: boolean
+          companyId: string
+          createdAt: string
+          email: string
+          id: string
+          name: string
+          passwordHash: string
+          role: Database["public"]["Enums"]["UserRole"]
+          updatedAt: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "User"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      set_user_role: {
+        Args: {
+          p_role: Database["public"]["Enums"]["UserRole"]
+          p_user_id: string
+        }
+        Returns: {
+          active: boolean
+          companyId: string
+          createdAt: string
+          email: string
+          id: string
+          name: string
+          passwordHash: string
+          role: Database["public"]["Enums"]["UserRole"]
+          updatedAt: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "User"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
     }
     Enums: {
       CampaignStatus:
