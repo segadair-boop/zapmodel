@@ -190,11 +190,12 @@ export async function connectSession(sessionId: string) {
       if (!remoteJid || remoteJid === 'status@broadcast' || remoteJid.endsWith('@g.us')) continue;
       const body = getBody(message);
       if (!body && !message.message) continue;
-      const number = remoteJid.replace(/\D/g, '');
+      const peer = await resolvePeer(sock, message);
       await sink.onMessage?.({
         sessionId,
         remoteJid,
-        number,
+        whatsappJid: peer.whatsappJid,
+        number: peer.number,
         pushName: message.pushName || undefined,
         body,
         fromMe: Boolean(message.key.fromMe),
@@ -203,6 +204,7 @@ export async function connectSession(sessionId: string) {
       });
     }
   });
+
 }
 
 export async function disconnectSession(sessionId: string, logout = false) {
