@@ -374,10 +374,15 @@ app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: Au
 app.post('/api/files', requireAuth(), upload.single('file'), async (req: AuthedRequest, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Arquivo obrigatório' });
+    const valid = await validateStoredUpload(req.file.path, req.file.mimetype).catch(() => false);
+    if (!valid) {
+      await discardUpload(req.file.path);
+      return res.status(400).json({ error: 'Conteúdo do arquivo não corresponde ao tipo permitido.' });
+    }
     const { data, error } = await req.db!.from('FileAsset').insert({
       id: newId(),
       companyId: req.auth!.companyId,
-      name: req.file.originalname,
+      name: sanitizeUploadName(req.file.originalname),
       path: path.basename(req.file.path),
       mimeType: req.file.mimetype,
       size: req.file.size
@@ -398,10 +403,13 @@ app.get('/api/files/:id/download', requireAuth(), async (req: AuthedRequest, res
     const filePath = path.join(uploadDir, path.basename(String(asset.data.path || '')));
     await fs.access(filePath);
     res.type(asset.data.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(asset.data.name)}`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(sanitizeUploadName(String(asset.data.name || 'arquivo')))}`);
     res.sendFile(filePath);
   } catch (e) {
-    fail(res, e, 404);
+    console.error('[worker] falha no download', e);
+    res.status(404).json({ error: 'Arquivo não encontrado' });
   }
 });
 
@@ -414,6 +422,7 @@ app.post('/api/v1/messages/send', async (req, res) => {
     const plainToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : String(xApiKey || '');
     if (!plainToken) return res.status(401).json({ error: 'Token obrigatório em Authorization: Bearer ou X-API-Key' });
     const tokenHash = crypto.createHash('sha256').update(plainToken).digest('hex');
+    if (!checkRateLimit(tokenHash, 60, 60_000)) return res.status(429).json({ error: 'Limite de requisições excedido. Tente novamente em instantes.' });
 
     const db = await background();
     const token = await db.from('ApiToken').select('id,companyId,active').eq('tokenHash', tokenHash).maybeSingle();
@@ -422,7 +431,8 @@ app.post('/api/v1/messages/send', async (req, res) => {
 
     const number = String(req.body?.number || '').replace(/\D/g, '');
     const body = String(req.body?.body ?? req.body?.message ?? '').trim();
-    if (!number || !body) return res.status(400).json({ error: 'Informe number e body (ou message)' });
+    if (number.length < 8 || number.length > 15) return res.status(400).json({ error: 'Informe um number válido com 8 a 15 dígitos' });
+    if (body.length < 1 || body.length > MAX_TEXT) return res.status(400).json({ error: 'Informe body (ou message) com 1 a 4096 caracteres' });
 
     const session = await db.from('WhatsAppSession').select('id').eq('companyId', token.data.companyId).eq('status', 'CONNECTED').limit(1).maybeSingle();
     const sessionId = session.data?.id as string | undefined;
