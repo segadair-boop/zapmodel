@@ -110,8 +110,8 @@ function Page({active,session}:{active:NavKey;session:Session}){
     case "tickets": return <Tickets session={session}/>;
     case "connections": return <Connections/>;
     case "contacts": return <Contacts session={session}/>;
-    case "queues": return <SimpleCrud session={session} title="Filas & Setores" table="Queue" fields={["name","color"]}/>;
-    case "quick": return <SimpleCrud session={session} title="Respostas rápidas" table="QuickMessage" fields={["shortcut","message"]}/>;
+    case "queues": return <SimpleCrud key="Queue" session={session} title="Filas & Setores" table="Queue" fields={["name","color"]}/>;
+    case "quick": return <SimpleCrud key="QuickMessage" session={session} title="Respostas rápidas" table="QuickMessage" fields={["shortcut","message"]}/>;
     case "kanban": return <Kanban/>;
     case "schedules": return <Schedules session={session}/>;
     case "todo": return <Tasks session={session}/>;
@@ -148,12 +148,22 @@ function Tickets({session}:{session:Session}){
   const [selected,setSelected]=useState(""); const [messages,setMessages]=useState<any[]>([]); const [text,setText]=useState(""); const [q,setQ]=useState("");
   const ticket=r.data.find(t=>t.id===(selected||r.data[0]?.id));
   const visible=useMemo(()=>r.data.filter(t=>`${t.contact?.name||""} ${t.contact?.number||""} ${t.lastMessage||""}`.toLowerCase().includes(q.toLowerCase())),[r.data,q]);
+  const [msgError,setMsgError]=useState("");
   const loadMessages=useCallback(async()=>{
     if(!ticket){setMessages([]);return}
+    async function fromDatabase(){
+      const {data,error}=await db.from("Message").select("*").eq("ticketId",ticket!.id).order("createdAt",{ascending:true});
+      if(error)throw error;
+      setMessages(data||[]);
+      if(ticket!.unread) await updateRow("Ticket",ticket!.id,{unread:0}).catch(()=>undefined);
+    }
     try{
-      if(API) setMessages(await worker<any[]>(`/api/tickets/${ticket.id}/messages`));
-      else {const {data,error}=await db.from("Message").select("*").eq("ticketId",ticket.id).order("createdAt",{ascending:true});if(error)throw error;setMessages(data||[])}
-    }catch(e:any){console.error(e)}
+      if(API){
+        try{ setMessages(await worker<any[]>(`/api/tickets/${ticket.id}/messages`)); setMsgError(""); return }
+        catch(workerErr:any){ await fromDatabase(); setMsgError("Worker do WhatsApp indisponível; exibindo o histórico salvo."); return }
+      }
+      await fromDatabase(); setMsgError("");
+    }catch(e:any){ setMsgError(e?.message||"Não foi possível carregar as mensagens.") }
   },[ticket?.id]);
   useEffect(()=>{loadMessages();if(!ticket)return;const id=setInterval(()=>{loadMessages();r.reload()},2500);return()=>clearInterval(id)},[loadMessages,ticket?.id]);
   async function send(){if(!ticket||!text.trim())return;try{
@@ -177,17 +187,21 @@ function Tickets({session}:{session:Session}){
 }
 
 function Connections(){
-  const r=useData<any[]>(()=>selectAll("WhatsAppSession"),[],3000);
+  const r=useData<any[]>(async()=>{
+    if(API){ try{ return await worker<any[]>("/api/whatsapp") }catch{ /* worker fora do ar: usa o banco */ } }
+    return await selectAll("WhatsAppSession");
+  },[],3000);
   async function add(){const name=prompt("Nome da conexão:","Principal");if(!name)return;if(!API)return alert("Worker do WhatsApp indisponível.");try{await worker("/api/whatsapp",{method:"POST",body:JSON.stringify({name})});r.reload()}catch(e:any){alert(e.message)}}
   async function action(id:string,kind:"connect"|"disconnect"){if(!API)return alert("Worker do WhatsApp indisponível.");try{await worker(`/api/whatsapp/${id}/${kind}`,{method:"POST",body:JSON.stringify(kind==="disconnect"?{logout:false}:{})});r.reload()}catch(e:any){alert(e.message)}}
-  return <div className="stack"><div className="page-actions"><p>Gerencie sessões persistentes do WhatsApp.</p><button className="primary-btn" onClick={add}><Plus size={16}/>Nova conexão</button></div>{r.error?<Alert text={r.error}/>:null}<div className="cards-grid">{r.data.map(w=><div className="panel connection-card" key={w.id}><div className="connection-icon"><MessageCircleMore/></div><h3>{w.name}</h3><p>{w.phone?formatPhone(w.phone):"Aguardando leitura do QR Code"}</p><span className={`status ${String(w.status).toLowerCase()}`}>{w.status}</span>{w.qr?<img className="qr-real" src={w.qr} alt="QR Code WhatsApp"/>:null}<div className="row-actions"><button onClick={()=>action(w.id,"connect")}>Conectar</button><button onClick={()=>action(w.id,"disconnect")}>Desconectar</button></div></div>)}</div></div>
+  const realStatus=(w:any)=> w.connected===false&&String(w.status)==="CONNECTED" ? "DISCONNECTED" : String(w.status);
+  return <div className="stack"><div className="page-actions"><p>Gerencie sessões persistentes do WhatsApp.</p><button className="primary-btn" onClick={add}><Plus size={16}/>Nova conexão</button></div>{r.error?<Alert text={r.error}/>:null}<div className="cards-grid">{r.data.map(w=><div className="panel connection-card" key={w.id}><div className="connection-icon"><MessageCircleMore/></div><h3>{w.name}</h3><p>{w.phone?formatPhone(w.phone):"Aguardando leitura do QR Code"}</p><span className={`status ${realStatus(w).toLowerCase()}`}>{realStatus(w)}</span>{w.qr?<img className="qr-real" src={w.qr} alt="QR Code WhatsApp"/>:null}<div className="row-actions"><button onClick={()=>action(w.id,"connect")}>Conectar</button><button onClick={()=>action(w.id,"disconnect")}>Desconectar</button></div></div>)}</div></div>
 }
 
 function Contacts({session}:{session:Session}){
   const r=useData<any[]>(()=>selectAll("Contact"),[],5000); const [q,setQ]=useState("");
   const rows=useMemo(()=>r.data.filter(c=>`${c.name} ${c.number} ${c.email||""}`.toLowerCase().includes(q.toLowerCase())),[r.data,q]);
   async function add(){const name=prompt("Nome do contato:");if(!name)return;const raw=prompt("Número com DDI e DDD:");if(!raw)return;const number=raw.replace(/\D/g,"");if(number.length<10) return alert("Informe um número válido com DDD e, de preferência, DDI.");const email=prompt("E-mail (opcional):")||"";try{if(r.data.some(c=>String(c.number).replace(/\D/g,"")===number))throw new Error("Este número já está cadastrado.");await insertRow("Contact",{name:name.trim(),number,email:email.trim()||null,companyId:session.user.companyId});r.reload()}catch(e:any){alert(e.message)}}
-  async function del(id:string){if(!confirm("Excluir este contato?"))return;try{const linked=await db.from("Ticket").select("id",{count:"exact",head:true}).eq("contactId",id);if((linked.count||0)>0)throw new Error("Este contato possui atendimentos vinculados e não pode ser excluído.");await deleteRow("Contact",id);r.reload()}catch(e:any){alert(e.message)}}
+  async function del(id:string){if(!confirm("Excluir este contato?"))return;try{const linked=await db.from("Ticket").select("id",{count:"exact",head:true}).eq("contactId",id);if((linked.count||0)>0)throw new Error("Este contato possui atendimentos vinculados e não pode ser excluído.");const inCampaign=await db.from("CampaignContact").select("contactId",{count:"exact",head:true}).eq("contactId",id);if((inCampaign.count||0)>0)throw new Error("Este contato faz parte de uma campanha e não pode ser excluído. Remova-o da campanha primeiro.");await deleteRow("Contact",id);r.reload()}catch(e:any){alert(e.message)}}
   return <div className="stack"><div className="page-actions"><div className="search-box wide"><Search size={16}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar contato"/></div><button className="primary-btn" onClick={add}><Plus size={16}/>Novo contato</button></div><section className="panel"><Table heads={["Nome","Número","E-mail",""]} rows={rows.map(c=>[<AvatarName name={c.name}/>,formatPhone(c.number),c.email||"—",<button className="danger-icon" onClick={()=>del(c.id)}><Trash2 size={16}/></button>])}/></section></div>
 }
 
@@ -209,7 +223,8 @@ function Kanban(){
 function Schedules({session}:{session:Session}){
   const r=useData<any[]>(()=>selectAll("Schedule","*","scheduledAt"),[],5000);
   async function add(){const title=prompt("Título:");if(!title)return;const body=prompt("Mensagem:");if(!body?.trim())return alert("Informe a mensagem do agendamento.");const raw=prompt("Número do contato com DDI e DDD:");if(!raw)return;const contactNumber=raw.replace(/\D/g,"");if(contactNumber.length<10)return alert("Número inválido.");const scheduledAt=prompt("Data/hora (AAAA-MM-DDTHH:mm):",new Date(Date.now()+3600000).toISOString().slice(0,16));if(!scheduledAt)return;try{await insertRow("Schedule",{title:title.trim(),body:body.trim(),contactNumber,scheduledAt:new Date(scheduledAt).toISOString(),userId:session.user.id,companyId:session.user.companyId});r.reload()}catch(e:any){alert(e.message)}}
-  return <ListPanel title="Agendamentos" action={add} heads={["Título","Destino","Agendado para","Status"]} rows={r.data.map(x=>[x.title,formatPhone(x.contactNumber||""),fmt(x.scheduledAt),x.sentAt?`Enviado em ${fmt(x.sentAt)}`:new Date(x.scheduledAt)<new Date()?"Aguardando conexão/envio":"Agendado"])} />
+  const statusLabel=(x:any)=>{const attempts=Number(x.attempts||0);if(x.sentAt)return `Enviado em ${fmt(x.sentAt)}`;if(attempts>=5)return "Falhou";if(attempts>0)return `Tentativa ${attempts}/5`;return new Date(x.scheduledAt)<new Date()?"Aguardando conexão/envio":"Agendado"};
+  return <ListPanel title="Agendamentos" action={add} heads={["Título","Destino","Agendado para","Status"]} rows={r.data.map(x=>[x.title,formatPhone(x.contactNumber||""),fmt(x.scheduledAt),statusLabel(x)])} />
 }
 
 function Tasks({session}:{session:Session}){
@@ -237,7 +252,8 @@ async function sha256(value:string){const buf=await crypto.subtle.digest("SHA-25
 function Integrations({session}:{session:Session}){
   const r=useData<any[]>(()=>selectAll("ApiToken"),[]); const [newToken,setNewToken]=useState("");
   async function add(){const name=prompt("Nome do token:","Integração");if(!name)return;try{const token=`zm_${newId().replace(/-/g,"")}${newId().replace(/-/g,"")}`;await insertRow("ApiToken",{name,tokenHash:await sha256(token),active:true,companyId:session.user.companyId});setNewToken(token);r.reload()}catch(e:any){alert(e.message)}}
-  return <div className="stack"><div className="hero"><div><h2>API externa</h2><p>Envie mensagens por integração usando uma chave de API.</p></div><button className="primary-btn" onClick={add}><Plus size={16}/>Gerar token</button></div>{newToken?<div className="panel token-box"><strong>Copie agora — o token completo é exibido somente neste momento:</strong><code>{newToken}</code></div>:null}<section className="panel"><Table heads={["Nome","Ativo","Criado em"]} rows={r.data.map(x=>[x.name,x.active?"Sim":"Não",fmt(x.createdAt)])}/></section><section className="panel api-help"><h3>Envio por API</h3><code>POST {API||"https://api.seudominio.com"}/api/v1/messages/send</code><p>Header: <b>X-API-Key</b> ou <b>Authorization: Bearer TOKEN</b> • Body JSON: <b>number</b> e <b>message</b> (ou <b>body</b>).</p></section></div>
+  async function toggle(x:any){try{const {error}=await db.from("ApiToken").update({active:!x.active}).eq("id",x.id);if(error)throw error;r.reload()}catch(e:any){alert(e.message)}}
+  return <div className="stack"><div className="hero"><div><h2>API externa</h2><p>Envie mensagens por integração usando uma chave de API.</p></div><button className="primary-btn" onClick={add}><Plus size={16}/>Gerar token</button></div>{newToken?<div className="panel token-box"><strong>Copie agora — o token completo é exibido somente neste momento:</strong><code>{newToken}</code></div>:null}<section className="panel"><Table heads={["Nome","Ativo","Criado em",""]} rows={r.data.map(x=>[x.name,x.active?"Sim":"Não",fmt(x.createdAt),<button onClick={()=>toggle(x)}>{x.active?"Desativar":"Reativar"}</button>])}/></section><section className="panel api-help"><h3>Envio por API</h3><code>POST {API||"https://api.seudominio.com"}/api/v1/messages/send</code><p>Header: <b>X-API-Key</b> ou <b>Authorization: Bearer TOKEN</b> • Body JSON: <b>number</b> e <b>message</b> (ou <b>body</b>).</p></section></div>
 }
 
 function UsersPage({session}:{session:Session}){
@@ -245,7 +261,7 @@ function UsersPage({session}:{session:Session}){
   async function toggleActive(x:any){try{const {error}=await db.rpc("set_user_active",{p_user_id:x.id,p_active:!x.active});if(error)throw error;r.reload()}catch(e:any){alert(e.message)}}
   async function toggleRole(x:any){if(session.user.role!=="OWNER")return;const next=x.role==="ADMIN"?"AGENT":"ADMIN";try{const {error}=await db.rpc("set_user_role",{p_user_id:x.id,p_role:next});if(error)throw error;r.reload()}catch(e:any){alert(e.message)}}
   const action=()=>alert("Por segurança, o cadastro público está fechado. O proprietário controla os usuários existentes nesta tela.");
-  return <ListPanel title="Usuários" action={action} heads={["Nome","E-mail","Perfil","Ativo","Ações"]} rows={r.data.map(x=>[x.name,x.email,x.role,x.active?"Sim":"Não",x.role==="OWNER"?"Proprietário":<span className="row-actions"><button onClick={()=>toggleRole(x)}>{x.role==="ADMIN"?"Tornar agente":"Tornar admin"}</button><button onClick={()=>toggleActive(x)}>{x.active?"Desativar":"Ativar"}</button></span>])}/>
+  return <ListPanel title="Usuários" action={action} heads={["Nome","E-mail","Perfil","Ativo","Ações"]} rows={r.data.map(x=>[x.name,x.email,x.role,x.active?"Sim":"Não",x.role==="OWNER"?"Proprietário":<span className="row-actions">{session.user.role==="OWNER"?<button onClick={()=>toggleRole(x)}>{x.role==="ADMIN"?"Tornar agente":"Tornar admin"}</button>:null}<button onClick={()=>toggleActive(x)}>{x.active?"Desativar":"Ativar"}</button></span>])}/>
 }
 
 function SettingsPage({session}:{session:Session}){
@@ -263,5 +279,5 @@ function Empty({text}:{text:string}){return <div className="empty-state">{text}<
 function Info({title,icon,text}:{title:string;icon:ReactNode;text:string}){return <div className="panel info-card"><div className="connection-icon">{icon}</div><h2>{title}</h2><p>{text}</p></div>}
 function initials(name:string){return name.split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join("").toUpperCase()||"ZM"}
 function fmt(v:string){try{return new Date(v).toLocaleString("pt-BR")}catch{return v}}
-function formatPhone(v:string){const d=String(v||"").replace(/\D/g,"");if(!d)return "—";if(d.startsWith("55")&&d.length>=12){const ddd=d.slice(2,4);const n=d.slice(4);return `+55 (${ddd}) ${n.length===9?n.slice(0,5)+"-"+n.slice(5):n.slice(0,4)+"-"+n.slice(4)}`}return `+${d}`}
+function formatPhone(v:any){const raw=String(v??"").trim();if(!raw||raw.includes("@lid"))return "Número não resolvido";const d=raw.replace(/\D/g,"");if(!d)return "Número não resolvido";if(d.startsWith("55")&&d.length>=12){const ddd=d.slice(2,4);const n=d.slice(4);return `+55 (${ddd}) ${n.length===9?n.slice(0,5)+"-"+n.slice(5):n.slice(0,4)+"-"+n.slice(4)}`}return `+${d}`}
 function label(v:string){return ({name:"Nome",color:"Cor",shortcut:"Atalho",message:"Mensagem"} as any)[v]||v}
