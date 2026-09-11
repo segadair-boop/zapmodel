@@ -512,12 +512,18 @@ setWhatsAppEventSink({
   onMessage: async event => {
     try {
       // Mídia recebida vira arquivo na biblioteca com URL de download válida.
-      if (event.media) {
+      const mediaAllowed = event.media
+        ? isAllowedUpload(event.media.mimeType, event.media.fileName) && hasValidSignature(event.media.buffer, event.media.mimeType)
+        : false;
+      if (event.media && !mediaAllowed) {
+        console.error('[worker] mídia recebida rejeitada por tipo/assinatura inválidos');
+      }
+      if (event.media && mediaAllowed) {
         try {
           const db = await background();
           const session = await getSessionById(db, event.sessionId);
           if (session) {
-            const safeName = event.media.fileName.replace(/[^\w.\-]+/g, '_').slice(-80) || 'arquivo';
+            const safeName = sanitizeUploadName(event.media.fileName).replace(/[^\w.\-]+/g, '_').slice(-80) || 'arquivo';
             const storedName = `${newId()}-${safeName}`;
             await fs.writeFile(path.join(uploadDir, storedName), event.media.buffer);
             const asset = await db
@@ -525,7 +531,7 @@ setWhatsAppEventSink({
               .insert({
                 id: newId(),
                 companyId: session.companyId,
-                name: event.media.fileName,
+                name: safeName,
                 path: storedName,
                 mimeType: event.media.mimeType,
                 size: event.media.buffer.length
