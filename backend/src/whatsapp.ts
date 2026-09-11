@@ -39,7 +39,6 @@ export type SendResult = {
   resolvedPn: string | null;
 };
 
-
 type EventSink = {
   onConnection?: (event: ConnectionEvent) => Promise<void> | void;
   onMessage?: (event: IncomingMessageEvent) => Promise<void> | void;
@@ -72,6 +71,7 @@ function getBody(message: WAMessage): string {
 
 const isLid = (jid?: string | null) => Boolean(jid && jid.endsWith('@lid'));
 const isPnJid = (jid?: string | null) => Boolean(jid && jid.endsWith('@s.whatsapp.net'));
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Normaliza um JID de usuário removendo device/agent (ex.: 55...:12@s.whatsapp.net). */
 function normalizeJid(jid?: string | null): string | null {
@@ -90,7 +90,7 @@ function numberFromPnJid(jid?: string | null): string | null {
   return digits || null;
 }
 
-/** Tenta mapear um LID para o número real via signalRepository (Baileys 6.7.x). */
+/** Tenta mapear um LID para o número real via signalRepository. */
 async function lidToPn(sock: WASocket, lid: string): Promise<string | null> {
   try {
     const mapping = (sock as any)?.signalRepository?.lidMapping;
@@ -99,6 +99,20 @@ async function lidToPn(sock: WASocket, lid: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * O mapeamento LID -> PN pode ser populado pouco depois do evento da mensagem.
+ * Faz tentativas curtas antes de concluir que o número ainda não está disponível.
+ */
+async function lidToPnWithRetry(sock: WASocket, lid: string): Promise<string | null> {
+  const delays = [0, 120, 350, 800];
+  for (const delay of delays) {
+    if (delay) await wait(delay);
+    const pn = await lidToPn(sock, lid);
+    if (pn && isPnJid(pn)) return pn;
+  }
+  return null;
 }
 
 /** Resolve o JID endereçável do contato e o número real, quando existir. */
@@ -115,15 +129,13 @@ async function resolvePeer(
   if (candidates[0]) return { whatsappJid: candidates[0], number: numberFromPnJid(candidates[0]) };
 
   if (isLid(remoteJid)) {
-    const pn = await lidToPn(sock, remoteJid);
-    if (pn && isPnJid(pn)) return { whatsappJid: pn, number: numberFromPnJid(pn) };
+    const pn = await lidToPnWithRetry(sock, remoteJid);
+    if (pn && isPnJid(pn)) return { whatsappJid: remoteJid, number: numberFromPnJid(pn) };
     return { whatsappJid: remoteJid, number: null };
   }
 
   return { whatsappJid: remoteJid, number: numberFromPnJid(remoteJid) };
 }
-
-
 
 export async function connectSession(sessionId: string) {
   if (sockets.has(sessionId)) return;
@@ -204,7 +216,6 @@ export async function connectSession(sessionId: string) {
       });
     }
   });
-
 }
 
 export async function disconnectSession(sessionId: string, logout = false) {
@@ -241,13 +252,15 @@ async function resolveSendTarget(
   const number = (normalized.number || '').replace(/\D/g, '');
 
   if (storedJid && isLid(storedJid)) {
-    const pn = await lidToPn(sock, storedJid);
+    const pn = await lidToPnWithRetry(sock, storedJid);
     if (pn && isPnJid(pn)) return { jid: pn, resolvedPn: numberFromPnJid(pn) };
+    // Se o contato já possui número real cadastrado, prioriza o PN em vez de exibir/enviar ao LID cru.
+    if (number) return { jid: pnJidFor(number), resolvedPn: number };
     return { jid: storedJid, resolvedPn: null };
   }
 
-  if (storedJid && isPnJid(storedJid)) return { jid: storedJid, resolvedPn: null };
-  if (number) return { jid: pnJidFor(number), resolvedPn: null };
+  if (storedJid && isPnJid(storedJid)) return { jid: storedJid, resolvedPn: numberFromPnJid(storedJid) };
+  if (number) return { jid: pnJidFor(number), resolvedPn: number };
   throw new Error('Destino de envio inválido');
 }
 
@@ -277,4 +290,3 @@ export async function sendMedia(
   else result = await sock.sendMessage(jid, { document: media, mimetype: mimeType, fileName, caption });
   return { result, resolvedPn };
 }
-
