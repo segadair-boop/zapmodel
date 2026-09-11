@@ -215,6 +215,7 @@ export type Database = {
           notes: string | null
           number: string
           updatedAt: string
+          whatsappJid: string | null
         }
         Insert: {
           avatarUrl?: string | null
@@ -226,6 +227,7 @@ export type Database = {
           notes?: string | null
           number: string
           updatedAt?: string
+          whatsappJid?: string | null
         }
         Update: {
           avatarUrl?: string | null
@@ -237,6 +239,7 @@ export type Database = {
           notes?: string | null
           number?: string
           updatedAt?: string
+          whatsappJid?: string | null
         }
         Relationships: [
           {
