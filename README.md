@@ -1,57 +1,75 @@
 # ZapModel — Central Omnichannel
 
-Sistema de atendimento inspirado funcionalmente no código-fonte de referência HelloZap fornecido para o projeto.
+Sistema de atendimento e automação baseado funcionalmente no código-fonte HelloZap fornecido pelo proprietário do projeto.
 
-## Fluxo de desenvolvimento
+## Regra do projeto
 
 - **GitHub é a fonte oficial do código.**
-- Todas as alterações do projeto devem ser realizadas diretamente neste repositório.
-- **Lovable deve ser usado somente para visualização/preview do projeto**, sem geração ou edição de código.
+- Alterações devem ser realizadas diretamente neste repositório.
+- **Lovable é usado somente para visualização/preview**, sem geração de código.
 - Branch principal: `main`.
+- Preview: https://zapmodel.lovable.app
 
-## Preview
+## Arquitetura
 
-https://zapmodel.lovable.app
+O projeto possui duas camadas:
 
-## Módulos implementados na interface
+1. **Frontend** — React + TanStack Start + Vite, visualizado pelo Lovable.
+2. **Backend persistente** — Node.js/TypeScript + Express + PostgreSQL/Prisma + Socket.IO + Baileys, preparado para Docker/VPS.
 
-- Login e sessão de demonstração
-- Dashboard operacional
-- Atendimentos/Tickets
-- Conversa por atendimento
-- Alteração de status do ticket
-- Contatos
-- Conexões WhatsApp e fluxo visual de QR Code
-- Filas e setores
-- Respostas rápidas
-- Kanban
-- Agendamentos
-- Tarefas
-- Campanhas
-- Chat interno
-- Biblioteca de arquivos
-- Integrações e API
-- Usuários e perfis
-- Financeiro/assinatura
-- Configurações gerais
-- Layout responsivo para desktop e dispositivos móveis
-- Persistência local dos dados de demonstração usando `localStorage`
+## Backend funcional
 
-## Referência técnica analisada
+Inclui:
 
-O pacote de referência possui frontend React e backend Node.js/TypeScript com Express, Sequelize, Socket.IO, Bull/Redis, autenticação JWT, WhatsApp via Baileys, campanhas, filas, contatos, tickets, agendamentos, integrações e múltiplas empresas.
+- autenticação JWT e perfis OWNER/ADMIN/AGENT;
+- empresas/isolamento por `companyId`;
+- contatos;
+- tickets/atendimentos;
+- mensagens;
+- envio de texto e mídia;
+- recebimento de mensagens em tempo real;
+- conexão WhatsApp por QR Code com persistência da sessão;
+- reconexão automática;
+- filas/setores;
+- respostas rápidas;
+- tags/Kanban;
+- agendamentos com envio automático;
+- campanhas com processamento e status de cada destinatário;
+- tarefas;
+- usuários;
+- configurações;
+- uploads e biblioteca de arquivos;
+- API externa com token;
+- auditoria;
+- Socket.IO;
+- Docker Compose com PostgreSQL e Redis;
+- CI para validar frontend e backend.
 
-A versão atual deste repositório recria a experiência funcional para preview mantendo a stack moderna do projeto (React + TanStack Start + Vite). A conexão real com WhatsApp, banco persistente, filas Redis, autenticação de produção e disparos reais devem ser configurados na camada de backend antes de uso produtivo.
+## Execução do frontend
 
-## Desenvolvimento local
-
-```sh
-npm install
-npm run dev
+```bash
+bun install
+bun run dev
 ```
 
-Para produção:
+## Execução completa em servidor
 
-```sh
-npm run build
+```bash
+cp backend/.env.example .env
+# defina secrets e credenciais fortes
+docker compose up -d --build
 ```
+
+Leia `backend/README.md` antes de publicar.
+
+## Variável do frontend
+
+Para usar dados reais em vez do modo de preview, configure:
+
+```env
+VITE_API_URL=https://api.seudominio.com
+```
+
+## Observação sobre WhatsApp
+
+A sessão WhatsApp precisa de um processo persistente 24h. Portanto, o frontend pode ficar no Lovable/Vercel, mas o backend de WhatsApp deve ficar em VPS ou serviço de containers persistentes. O código usa Baileys (WhatsApp Web não oficial); para um produto comercial que exija integração oficialmente suportada pela Meta, adapte o conector para a WhatsApp Business Cloud API.

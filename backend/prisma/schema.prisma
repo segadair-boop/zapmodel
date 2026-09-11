@@ -1,0 +1,268 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole { OWNER ADMIN AGENT }
+enum TicketStatus { OPEN PENDING CLOSED }
+enum ConnectionStatus { DISCONNECTED CONNECTING QRCODE CONNECTED ERROR }
+enum CampaignStatus { DRAFT SCHEDULED RUNNING PAUSED FINISHED CANCELLED }
+enum TaskStatus { TODO DOING DONE }
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  users     User[]
+  queues    Queue[]
+  contacts  Contact[]
+  tickets   Ticket[]
+  sessions  WhatsAppSession[]
+  quickMessages QuickMessage[]
+  tags      Tag[]
+  schedules Schedule[]
+  tasks     Task[]
+  campaigns Campaign[]
+  settings  Setting[]
+  apiTokens ApiToken[]
+  files     FileAsset[]
+  auditLogs AuditLog[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(AGENT)
+  active       Boolean  @default(true)
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tickets      Ticket[]
+  messages     Message[]
+  schedules    Schedule[]
+  tasks        Task[]
+  auditLogs    AuditLog[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Queue {
+  id        String   @id @default(cuid())
+  name      String
+  color     String   @default("#22c55e")
+  greeting  String?
+  active    Boolean  @default(true)
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tickets   Ticket[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([companyId, name])
+}
+
+model Contact {
+  id        String   @id @default(cuid())
+  name      String
+  number    String
+  email     String?
+  avatarUrl String?
+  notes     String?
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tickets   Ticket[]
+  campaignContacts CampaignContact[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([companyId, number])
+}
+
+model Ticket {
+  id          String       @id @default(cuid())
+  status      TicketStatus @default(OPEN)
+  lastMessage String?
+  unread      Int          @default(0)
+  contactId   String
+  contact     Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  queueId     String?
+  queue       Queue?       @relation(fields: [queueId], references: [id], onDelete: SetNull)
+  userId      String?
+  user        User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  sessionId   String?
+  session     WhatsAppSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  companyId   String
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messages    Message[]
+  tags        TicketTag[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  @@index([companyId, status])
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  externalId  String?  @unique
+  body        String?
+  fromMe      Boolean  @default(false)
+  mediaUrl    String?
+  mediaType   String?
+  ack         Int      @default(0)
+  ticketId    String
+  ticket      Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  @@index([ticketId, createdAt])
+}
+
+model WhatsAppSession {
+  id          String           @id @default(cuid())
+  name        String
+  phone       String?
+  status      ConnectionStatus @default(DISCONNECTED)
+  qr          String?
+  isDefault   Boolean          @default(false)
+  companyId   String
+  company     Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tickets     Ticket[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  @@unique([companyId, name])
+}
+
+model QuickMessage {
+  id        String   @id @default(cuid())
+  shortcut  String
+  message   String
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([companyId, shortcut])
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String
+  color     String   @default("#64748b")
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tickets   TicketTag[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([companyId, name])
+}
+
+model TicketTag {
+  ticketId String
+  tagId    String
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  tag      Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  @@id([ticketId, tagId])
+}
+
+model Schedule {
+  id          String   @id @default(cuid())
+  title       String
+  body        String?
+  scheduledAt DateTime
+  sentAt      DateTime?
+  contactNumber String?
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Task {
+  id          String     @id @default(cuid())
+  title       String
+  description String?
+  status      TaskStatus @default(TODO)
+  dueAt       DateTime?
+  userId      String?
+  user        User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  companyId   String
+  company     Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model Campaign {
+  id          String         @id @default(cuid())
+  name        String
+  message     String
+  status      CampaignStatus @default(DRAFT)
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  companyId   String
+  company     Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contacts    CampaignContact[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}
+
+model CampaignContact {
+  campaignId String
+  contactId  String
+  status     String @default("PENDING")
+  error      String?
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact    Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  @@id([campaignId, contactId])
+}
+
+model Setting {
+  id        String   @id @default(cuid())
+  key       String
+  value     String
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @updatedAt
+  @@unique([companyId, key])
+}
+
+model ApiToken {
+  id        String   @id @default(cuid())
+  name      String
+  tokenHash String   @unique
+  active    Boolean  @default(true)
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+}
+
+model FileAsset {
+  id        String   @id @default(cuid())
+  name      String
+  path      String
+  mimeType  String
+  size      Int
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String
+  entity    String
+  entityId  String?
+  details   Json?
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@index([companyId, createdAt])
+}
