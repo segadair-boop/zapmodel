@@ -81,7 +81,7 @@ function LoginRegisterButton() {
       if (!card || card.querySelector('[data-register-button]')) return;
       const link = document.createElement('a');
       link.href = '/signup';
-      link.dataset.registerButton = 'true';
+      link.dataset['registerButton'] = 'true';
       link.className = 'secondary-btn login-btn register-login-btn';
       link.textContent = 'Cadastrar';
       const note = card.querySelector('.login-note');
