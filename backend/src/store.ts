@@ -98,27 +98,49 @@ export async function findOrCreateContact(
   return created.data as ContactRow;
 }
 
-async function findOrCreateTicket(db: SupabaseClient, companyId: string, contactId: string, sessionId: string) {
-  const existing = await db
+type TicketRow = { id: string; status: string; unread: number };
+
+async function lookupOpenTicket(db: SupabaseClient, companyId: string, contactId: string, sessionId: string): Promise<TicketRow | null> {
+  const result = await db
     .from('Ticket')
     .select('id,status,unread')
     .eq('companyId', companyId)
     .eq('contactId', contactId)
     .eq('sessionId', sessionId)
     .neq('status', 'CLOSED')
-    .order('updatedAt', { ascending: false })
+    .order('createdAt', { ascending: true })
     .limit(1)
     .maybeSingle();
-  if (existing.error) throw existing.error;
-  if (existing.data) return existing.data as { id: string; status: string; unread: number };
+  if (result.error) throw result.error;
+  return (result.data as TicketRow) || null;
+}
+
+/**
+ * Retorna um único ticket ativo por empresa + contato + conexão.
+ * O índice parcial no banco é a proteção definitiva contra condição de corrida.
+ * Se dois eventos tentarem criar ao mesmo tempo, um INSERT vence e o outro
+ * recebe 23505; nesse caso buscamos e reutilizamos o ticket vencedor.
+ */
+async function findOrCreateTicket(db: SupabaseClient, companyId: string, contactId: string, sessionId: string): Promise<TicketRow> {
+  const existing = await lookupOpenTicket(db, companyId, contactId, sessionId);
+  if (existing) return existing;
 
   const created = await db
     .from('Ticket')
     .insert({ id: newId(), companyId, contactId, sessionId, status: 'OPEN', unread: 0, updatedAt: nowIso() })
     .select('id,status,unread')
     .single();
-  if (created.error) throw created.error;
-  return created.data as { id: string; status: string; unread: number };
+
+  if (!created.error) return created.data as TicketRow;
+
+  // PostgreSQL unique_violation: outro evento criou o mesmo atendimento entre
+  // nossa consulta e o INSERT. Reutilizamos o registro já criado.
+  if ((created.error as any)?.code === '23505') {
+    const winner = await lookupOpenTicket(db, companyId, contactId, sessionId);
+    if (winner) return winner;
+  }
+
+  throw created.error;
 }
 
 export type PersistedIncoming = {
@@ -166,13 +188,19 @@ export async function persistIncomingMessage(event: IncomingMessageEvent): Promi
     })
     .select('*')
     .single();
-  if (inserted.error) throw inserted.error;
+
+  if (inserted.error) {
+    // O mesmo externalId também pode chegar em paralelo. A constraint única
+    // garante idempotência; nesse caso não recriamos ticket nem mensagem.
+    if ((inserted.error as any)?.code === '23505' && event.externalId) return null;
+    throw inserted.error;
+  }
 
   const { error: ticketError } = await db
     .from('Ticket')
     .update({
       lastMessage: event.body,
-      unread: event.fromMe ? 0 : (ticket.unread || 0) + 1,
+      unread: event.fromMe ? ticket.unread || 0 : (ticket.unread || 0) + 1,
       sessionId: event.sessionId,
       status: 'OPEN',
       updatedAt: nowIso()
