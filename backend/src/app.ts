@@ -270,10 +270,25 @@ app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: Au
     void (async () => {
       for (const target of targets.data || []) {
         try {
-          const contact = await req.db!.from('Contact').select('name,number').eq('id', target.contactId).single();
+          const contact = await req
+            .db!.from('Contact')
+            .select('name,number,whatsappJid')
+            .eq('id', target.contactId)
+            .single();
           if (contact.error) throw contact.error;
           const body = String(campaign.data.message || '').replace(/\{\{nome\}\}/gi, contact.data.name || '');
-          await sendText(sessionId, contact.data.number, body);
+          const sent = await sendText(
+            sessionId,
+            { number: contact.data.number, whatsappJid: contact.data.whatsappJid },
+            body
+          );
+          if (sent.resolvedPn && sent.resolvedPn !== contact.data.number) {
+            await req
+              .db!.from('Contact')
+              .update({ number: sent.resolvedPn, updatedAt: nowIso() })
+              .eq('id', target.contactId);
+          }
+
           await req
             .db!.from('CampaignContact')
             .update({ status: 'SENT', error: null })
