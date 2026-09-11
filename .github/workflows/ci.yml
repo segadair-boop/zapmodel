@@ -26,7 +26,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: backend/package.json
-      - run: npm install
-      - run: npx prisma generate
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
       - run: npm run build
