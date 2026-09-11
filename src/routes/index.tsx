@@ -1,292 +1,189 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
-  Activity,
-  Bell,
-  CalendarDays,
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  CircleDollarSign,
-  Clock3,
-  ContactRound,
-  FileText,
-  Filter,
-  Gauge,
-  Headphones,
-  KanbanSquare,
-  ListTodo,
-  LogOut,
-  Megaphone,
-  Menu,
-  MessageCircleMore,
-  MessagesSquare,
-  MoreVertical,
-  Paperclip,
-  Pencil,
-  PlugZap,
-  Plus,
-  QrCode,
-  Search,
-  Send,
-  Settings,
-  ShieldCheck,
-  Sparkles,
-  Tag,
-  Trash2,
-  Users,
-  Wifi,
-  X,
-  Zap,
+  Activity, CalendarDays, CheckCircle2, CircleDollarSign, ContactRound, FileText,
+  Gauge, Headphones, KanbanSquare, ListTodo, LogOut, Megaphone, Menu,
+  MessageCircleMore, MessagesSquare, PlugZap, Plus, RefreshCw, Search, Send,
+  Settings, ShieldCheck, Tag, Trash2, Users, Wifi, WifiOff, Zap
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 export const Route = createFileRoute("/")({ component: ZapModelApp });
 
-type TicketStatus = "open" | "pending" | "closed";
-type Ticket = {
-  id: number;
-  name: string;
-  phone: string;
-  queue: string;
-  status: TicketStatus;
-  last: string;
-  unread: number;
-  time: string;
+type NavKey = "dashboard"|"tickets"|"connections"|"contacts"|"queues"|"quick"|"kanban"|"schedules"|"todo"|"campaigns"|"chat"|"files"|"integrations"|"users"|"finance"|"settings";
+type User = { id:string; name:string; email:string; role:string; companyId:string };
+type Session = { token:string; user:User };
+
+const API = String((import.meta as any).env?.VITE_API_URL || "").replace(/\/$/, "");
+const isPreview = !API;
+
+const nav: {key:NavKey;label:string;icon:ReactNode;group?:string}[] = [
+  {key:"dashboard",label:"Dashboard",icon:<Gauge size={18}/>},
+  {key:"tickets",label:"Atendimentos",icon:<Headphones size={18}/>},
+  {key:"connections",label:"Conexões",icon:<PlugZap size={18}/>},
+  {key:"contacts",label:"Contatos",icon:<ContactRound size={18}/>,group:"Cadastros"},
+  {key:"queues",label:"Filas & Setores",icon:<Users size={18}/>},
+  {key:"quick",label:"Respostas rápidas",icon:<Zap size={18}/>},
+  {key:"kanban",label:"Kanban",icon:<KanbanSquare size={18}/>,group:"Produtividade"},
+  {key:"schedules",label:"Agendamentos",icon:<CalendarDays size={18}/>},
+  {key:"todo",label:"Tarefas",icon:<ListTodo size={18}/>},
+  {key:"campaigns",label:"Campanhas",icon:<Megaphone size={18}/>,group:"Comunicação"},
+  {key:"chat",label:"Chat interno",icon:<MessagesSquare size={18}/>},
+  {key:"files",label:"Arquivos",icon:<FileText size={18}/>},
+  {key:"integrations",label:"Integrações/API",icon:<Activity size={18}/>,group:"Administração"},
+  {key:"users",label:"Usuários",icon:<ShieldCheck size={18}/>},
+  {key:"finance",label:"Financeiro",icon:<CircleDollarSign size={18}/>},
+  {key:"settings",label:"Configurações",icon:<Settings size={18}/>},
+];
+
+const demo = {
+  dashboard:{open:2,pending:1,closed:38,contacts:1246,messages:3412,connectedSessions:1,campaigns:4},
+  contacts:[{id:"c1",name:"Maria Oliveira",number:"5538991112233",email:"maria@exemplo.com"},{id:"c2",name:"João Martins",number:"5538998765412",email:"joao@exemplo.com"}],
+  queues:[{id:"q1",name:"Comercial",color:"#22c55e"},{id:"q2",name:"Suporte",color:"#3b82f6"},{id:"q3",name:"Financeiro",color:"#f59e0b"}],
+  tickets:[
+    {id:"t1",status:"OPEN",lastMessage:"Gostaria de conhecer os planos",unread:2,contact:{name:"Maria Oliveira",number:"5538991112233"},queue:{name:"Comercial"},session:{name:"Principal",status:"CONNECTED"}},
+    {id:"t2",status:"PENDING",lastMessage:"Vou reiniciar e testar",unread:0,contact:{name:"João Martins",number:"5538998765412"},queue:{name:"Suporte"},session:{name:"Principal",status:"CONNECTED"}}
+  ],
+  whatsapp:[{id:"w1",name:"Principal",phone:"5538999999999",status:"CONNECTED",qr:null,isDefault:true}],
+  quick:[{id:"r1",shortcut:"/ola",message:"Olá! Como posso ajudar?"}],
+  tags:[{id:"g1",name:"Cliente",color:"#22c55e"}],
+  schedules:[{id:"s1",title:"Retorno comercial",body:"Olá, podemos continuar?",scheduledAt:new Date(Date.now()+3600000).toISOString(),sentAt:null}],
+  tasks:[{id:"d1",title:"Revisar fila de suporte",description:"Validar chamados pendentes",status:"TODO"}],
+  campaigns:[{id:"p1",name:"Campanha de boas-vindas",message:"Olá!",status:"DRAFT",_count:{contacts:12}}],
+  users:[{id:"u1",name:"Administrador",email:"admin@zapmodel.local",role:"OWNER",active:true}],
+  files:[],
+  settings:[]
 };
-type Contact = { id: number; name: string; phone: string; email: string; tag: string };
-type Message = { id: number; ticketId: number; mine: boolean; text: string; time: string };
-type NavKey =
-  | "dashboard"
-  | "tickets"
-  | "connections"
-  | "contacts"
-  | "queues"
-  | "quick"
-  | "kanban"
-  | "schedules"
-  | "todo"
-  | "campaigns"
-  | "chat"
-  | "files"
-  | "integrations"
-  | "users"
-  | "finance"
-  | "settings";
 
-const initialTickets: Ticket[] = [
-  { id: 1001, name: "Maria Oliveira", phone: "5538991112233", queue: "Comercial", status: "open", last: "Gostaria de conhecer os planos", unread: 2, time: "21:18" },
-  { id: 1002, name: "João Martins", phone: "5538998765412", queue: "Suporte", status: "pending", last: "Vou reiniciar e testar novamente", unread: 0, time: "20:54" },
-  { id: 1003, name: "Empresa Horizonte", phone: "5538993322110", queue: "Financeiro", status: "open", last: "Pode enviar a segunda via?", unread: 1, time: "19:37" },
-  { id: 1004, name: "Carlos Souza", phone: "5538995544332", queue: "Comercial", status: "closed", last: "Obrigado pelo atendimento!", unread: 0, time: "18:21" },
-];
-
-const initialContacts: Contact[] = [
-  { id: 1, name: "Maria Oliveira", phone: "+55 38 99111-2233", email: "maria@exemplo.com", tag: "Cliente" },
-  { id: 2, name: "João Martins", phone: "+55 38 99876-5412", email: "joao@exemplo.com", tag: "Suporte" },
-  { id: 3, name: "Empresa Horizonte", phone: "+55 38 99332-2110", email: "contato@horizonte.com", tag: "Empresa" },
-  { id: 4, name: "Carlos Souza", phone: "+55 38 99554-4332", email: "carlos@exemplo.com", tag: "Lead" },
-];
-
-const initialMessages: Message[] = [
-  { id: 1, ticketId: 1001, mine: false, text: "Olá! Gostaria de conhecer os planos disponíveis.", time: "21:15" },
-  { id: 2, ticketId: 1001, mine: true, text: "Olá, Maria! Claro. Posso te apresentar as opções e tirar suas dúvidas.", time: "21:16" },
-  { id: 3, ticketId: 1001, mine: false, text: "Perfeito, gostaria de conhecer os planos.", time: "21:18" },
-  { id: 4, ticketId: 1002, mine: true, text: "Pode reiniciar o equipamento e me dizer se o indicador ficou verde?", time: "20:50" },
-  { id: 5, ticketId: 1002, mine: false, text: "Vou reiniciar e testar novamente.", time: "20:54" },
-];
-
-const nav: { key: NavKey; label: string; icon: ReactNode; group?: string }[] = [
-  { key: "dashboard", label: "Dashboard", icon: <Gauge size={19} /> },
-  { key: "tickets", label: "Atendimentos", icon: <Headphones size={19} /> },
-  { key: "connections", label: "Conexões", icon: <PlugZap size={19} /> },
-  { key: "contacts", label: "Contatos", icon: <ContactRound size={19} />, group: "Cadastros" },
-  { key: "queues", label: "Filas & Setores", icon: <Users size={19} /> },
-  { key: "quick", label: "Respostas rápidas", icon: <Zap size={19} /> },
-  { key: "kanban", label: "Kanban", icon: <KanbanSquare size={19} />, group: "Produtividade" },
-  { key: "schedules", label: "Agendamentos", icon: <CalendarDays size={19} /> },
-  { key: "todo", label: "Tarefas", icon: <ListTodo size={19} /> },
-  { key: "campaigns", label: "Campanhas", icon: <Megaphone size={19} />, group: "Comunicação" },
-  { key: "chat", label: "Chat interno", icon: <MessagesSquare size={19} /> },
-  { key: "files", label: "Arquivos", icon: <FileText size={19} /> },
-  { key: "integrations", label: "Integrações/API", icon: <Activity size={19} />, group: "Administração" },
-  { key: "users", label: "Usuários", icon: <ShieldCheck size={19} /> },
-  { key: "finance", label: "Financeiro", icon: <CircleDollarSign size={19} /> },
-  { key: "settings", label: "Configurações", icon: <Settings size={19} /> },
-];
-
-function useStoredState<T>(key: string, fallback: T) {
-  const [value, setValue] = useState<T>(fallback);
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(key);
-      if (raw) setValue(JSON.parse(raw));
-    } catch { /* preview storage can be unavailable */ }
-  }, [key]);
-  useEffect(() => {
-    try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* noop */ }
-  }, [key, value]);
-  return [value, setValue] as const;
+function useStored<T>(key:string, fallback:T){
+  const [v,setV]=useState<T>(fallback);
+  useEffect(()=>{try{const raw=localStorage.getItem(key);if(raw)setV(JSON.parse(raw));}catch{}},[key]);
+  useEffect(()=>{try{localStorage.setItem(key,JSON.stringify(v));}catch{}},[key,v]);
+  return [v,setV] as const;
 }
 
-function ZapModelApp() {
-  const [authenticated, setAuthenticated] = useStoredState("zapmodel-auth", false);
-  const [active, setActive] = useState<NavKey>("dashboard");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [tickets, setTickets] = useStoredState<Ticket[]>("zapmodel-tickets", initialTickets);
-  const [contacts, setContacts] = useStoredState<Contact[]>("zapmodel-contacts", initialContacts);
-  const [messages, setMessages] = useStoredState<Message[]>("zapmodel-messages", initialMessages);
-  const [selectedTicketId, setSelectedTicketId] = useState(1001);
-
-  if (!authenticated) return <Login onLogin={() => setAuthenticated(true)} />;
-
-  const pageTitle = nav.find((item) => item.key === active)?.label ?? "ZapModel";
-  return (
-    <div className="app-shell">
-      <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
-        <div className="brand"><span className="brand-mark"><MessageCircleMore size={24} /></span><div><b>ZapModel</b><small>Omnichannel</small></div></div>
-        <nav className="nav-list">
-          {nav.map((item, index) => {
-            const previousGroup = index === 0 ? undefined : nav[index - 1].group;
-            return <div key={item.key}>
-              {item.group && item.group !== previousGroup && <div className="nav-group">{item.group}</div>}
-              <button className={active === item.key ? "nav-item active" : "nav-item"} onClick={() => { setActive(item.key); setSidebarOpen(false); }}>
-                {item.icon}<span>{item.label}</span>{item.key === "tickets" && <em>{tickets.filter(t => t.status !== "closed").length}</em>}
-              </button>
-            </div>;
-          })}
-        </nav>
-        <div className="sidebar-footer"><div className="avatar">AM</div><div><strong>Administrador</strong><small>Online</small></div><button title="Sair" onClick={() => setAuthenticated(false)}><LogOut size={18} /></button></div>
-      </aside>
-
-      <div className="main-area">
-        <header className="topbar">
-          <button className="mobile-menu" onClick={() => setSidebarOpen(v => !v)}><Menu size={22} /></button>
-          <div><h1>{pageTitle}</h1><p>Central de atendimento e relacionamento</p></div>
-          <div className="top-actions"><span className="online-pill"><i /> WhatsApp conectado</span><button className="icon-btn"><Bell size={19} /><b className="dot" /></button><div className="avatar small">AM</div></div>
-        </header>
-        <main className="content">
-          {active === "dashboard" && <Dashboard tickets={tickets} contacts={contacts} />}
-          {active === "tickets" && <TicketsPage tickets={tickets} setTickets={setTickets} messages={messages} setMessages={setMessages} selectedTicketId={selectedTicketId} setSelectedTicketId={setSelectedTicketId} />}
-          {active === "connections" && <ConnectionsPage />}
-          {active === "contacts" && <ContactsPage contacts={contacts} setContacts={setContacts} />}
-          {active === "queues" && <QueuesPage />}
-          {active === "quick" && <QuickMessagesPage />}
-          {active === "kanban" && <KanbanPage />}
-          {active === "schedules" && <SchedulesPage />}
-          {active === "todo" && <TodoPage />}
-          {active === "campaigns" && <CampaignsPage />}
-          {active === "chat" && <InternalChat />}
-          {active === "files" && <FilesPage />}
-          {active === "integrations" && <IntegrationsPage />}
-          {active === "users" && <UsersPage />}
-          {active === "finance" && <FinancePage />}
-          {active === "settings" && <SettingsPage />}
-        </main>
-      </div>
-      {sidebarOpen && <button aria-label="Fechar menu" className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
-    </div>
-  );
+async function request<T>(path:string, opts:RequestInit={}, token?:string):Promise<T>{
+  if(!API) throw new Error("API não configurada");
+  const headers = new Headers(opts.headers||{});
+  if(token) headers.set("Authorization",`Bearer ${token}`);
+  if(!(opts.body instanceof FormData)) headers.set("Content-Type","application/json");
+  const res=await fetch(`${API}${path}`,{...opts,headers});
+  const body=await res.text();
+  const data=body?JSON.parse(body):null;
+  if(!res.ok) throw new Error(data?.error||`Erro ${res.status}`);
+  return data as T;
 }
 
-function Login({ onLogin }: { onLogin: () => void }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.trim() || !password.trim()) return setError("Informe e-mail e senha para continuar.");
-    setError(""); onLogin();
-  };
-  return <div className="login-page"><div className="login-decoration d1"/><div className="login-decoration d2"/><form className="login-card" onSubmit={submit}>
-    <div className="login-logo"><MessageCircleMore size={34}/></div><h1>ZapModel</h1><p>Entre para acessar sua central de atendimento.</p>
-    <label>E-mail<input value={email} onChange={e=>setEmail(e.target.value)} placeholder="seuemail@empresa.com" type="email" /></label>
-    <label>Senha<input value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" type="password" /></label>
-    {error && <div className="form-error">{error}</div>}<button className="primary-btn login-btn" type="submit">Entrar</button>
-    <small className="login-note">Ambiente de demonstração: qualquer e-mail e senha preenchidos liberam o acesso.</small>
-  </form></div>;
-}
-
-function Dashboard({ tickets, contacts }: { tickets: Ticket[]; contacts: Contact[] }) {
-  const open = tickets.filter(t=>t.status==="open").length;
-  const pending = tickets.filter(t=>t.status==="pending").length;
-  const closed = tickets.filter(t=>t.status==="closed").length;
-  return <div className="stack">
-    <div className="hero"><div><span className="eyebrow"><Sparkles size={15}/> Visão geral</span><h2>Boa noite, Administrador!</h2><p>Acompanhe o desempenho da operação e os atendimentos em tempo real.</p></div><button className="primary-btn"><Plus size={17}/> Novo atendimento</button></div>
-    <div className="stat-grid">
-      <Stat icon={<Headphones/>} label="Atendimentos abertos" value={open} trend="+12% hoje" tone="green" />
-      <Stat icon={<Clock3/>} label="Aguardando" value={pending} trend="Tempo médio 4 min" tone="amber" />
-      <Stat icon={<CheckCircle2/>} label="Finalizados" value={closed + 38} trend="+8% esta semana" tone="blue" />
-      <Stat icon={<ContactRound/>} label="Contatos" value={contacts.length + 1246} trend="+27 este mês" tone="violet" />
-    </div>
-    <div className="dashboard-grid">
-      <section className="panel chart-panel"><PanelTitle title="Atendimentos nos últimos 7 dias" subtitle="Entradas e finalizações"/><div className="bars">
-        {[{d:"Sex",v:54},{d:"Sáb",v:32},{d:"Dom",v:24},{d:"Seg",v:71},{d:"Ter",v:63},{d:"Qua",v:82},{d:"Hoje",v:68}].map(x=><div className="bar-col" key={x.d}><div className="bar-value">{x.v}</div><div className="bar" style={{height:`${x.v*1.55}px`}}/><small>{x.d}</small></div>)}
-      </div></section>
-      <section className="panel"><PanelTitle title="Filas" subtitle="Distribuição atual"/><div className="queue-metrics">
-        <Progress label="Comercial" value={74} count={18}/><Progress label="Suporte" value={58} count={12}/><Progress label="Financeiro" value={32} count={7}/><Progress label="Pós-venda" value={21} count={4}/>
-      </div></section>
-    </div>
-    <section className="panel"><PanelTitle title="Atendimentos recentes" subtitle="Últimas movimentações da equipe"/><div className="simple-table"><div className="tr th"><span>Contato</span><span>Fila</span><span>Status</span><span>Última mensagem</span></div>{tickets.map(t=><div className="tr" key={t.id}><span><AvatarName name={t.name}/></span><span>{t.queue}</span><span><Status status={t.status}/></span><span className="muted">{t.last}</span></div>)}</div></section>
+function ZapModelApp(){
+  const [session,setSession]=useStored<Session|null>("zapmodel-session",null);
+  const [active,setActive]=useState<NavKey>("dashboard");
+  const [menu,setMenu]=useState(false);
+  if(!session) return <Login onSuccess={setSession}/>;
+  return <div className="app-shell">
+    <aside className={`sidebar ${menu?"sidebar-open":""}`}>
+      <div className="brand"><span className="brand-mark"><MessageCircleMore size={24}/></span><div><b>ZapModel</b><small>Omnichannel</small></div></div>
+      <nav className="nav-list">{nav.map((n,i)=><div key={n.key}>{n.group&&nav[i-1]?.group!==n.group?<div className="nav-group">{n.group}</div>:null}<button className={active===n.key?"nav-item active":"nav-item"} onClick={()=>{setActive(n.key);setMenu(false)}}>{n.icon}<span>{n.label}</span></button></div>)}</nav>
+      <div className="sidebar-footer"><div className="avatar">{initials(session.user.name)}</div><div><strong>{session.user.name}</strong><small>{session.user.role}</small></div><button title="Sair" onClick={()=>setSession(null)}><LogOut size={18}/></button></div>
+    </aside>
+    <div className="main-area"><header className="topbar"><button className="mobile-menu" onClick={()=>setMenu(!menu)}><Menu size={22}/></button><div><h1>{nav.find(n=>n.key===active)?.label}</h1><p>{isPreview?"Modo de visualização — conecte VITE_API_URL para dados reais":"Backend conectado — dados persistentes"}</p></div><div className="top-actions"><span className={isPreview?"online-pill preview":"online-pill"}>{isPreview?<WifiOff size={14}/>:<Wifi size={14}/>} {isPreview?"Preview":"Produção"}</span><div className="avatar small">{initials(session.user.name)}</div></div></header>
+      <main className="content"><Page active={active} session={session}/></main>
+    </div>{menu?<button className="sidebar-backdrop" onClick={()=>setMenu(false)}/>:null}
   </div>;
 }
 
-function TicketsPage({tickets,setTickets,messages,setMessages,selectedTicketId,setSelectedTicketId}:{tickets:Ticket[];setTickets:(v:Ticket[])=>void;messages:Message[];setMessages:(v:Message[])=>void;selectedTicketId:number;setSelectedTicketId:(id:number)=>void}) {
-  const [filter,setFilter]=useState<"all"|TicketStatus>("all"); const [search,setSearch]=useState(""); const [text,setText]=useState("");
-  const selected=tickets.find(t=>t.id===selectedTicketId) ?? tickets[0];
-  const visible=tickets.filter(t=>(filter==="all"||t.status===filter) && (t.name.toLowerCase().includes(search.toLowerCase())||t.phone.includes(search)));
-  const send=()=>{if(!text.trim()||!selected)return; const now=new Date(); const time=now.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}); setMessages([...messages,{id:Date.now(),ticketId:selected.id,mine:true,text:text.trim(),time}]); setTickets(tickets.map(t=>t.id===selected.id?{...t,last:text.trim(),time}:t)); setText("");};
-  return <div className="tickets-layout">
-    <section className="ticket-sidebar panel"><div className="ticket-search"><div className="searchbox"><Search size={17}/><input placeholder="Buscar atendimento..." value={search} onChange={e=>setSearch(e.target.value)}/></div><button className="square-btn"><Plus size={18}/></button></div>
-      <div className="ticket-filters">{(["all","open","pending","closed"] as const).map(f=><button className={filter===f?"active":""} key={f} onClick={()=>setFilter(f)}>{f==="all"?"Todos":f==="open"?"Abertos":f==="pending"?"Aguardando":"Fechados"}</button>)}</div>
-      <div className="ticket-list">{visible.map(t=><button key={t.id} onClick={()=>setSelectedTicketId(t.id)} className={selected?.id===t.id?"ticket-row selected":"ticket-row"}><div className="avatar">{initials(t.name)}</div><div className="ticket-copy"><div><strong>{t.name}</strong><small>{t.time}</small></div><p>{t.last}</p><div className="ticket-meta"><span>{t.queue}</span>{t.unread>0&&<b>{t.unread}</b>}</div></div></button>)}</div>
-    </section>
-    <section className="chat-panel panel">{selected ? <><div className="chat-head"><AvatarName name={selected.name}/><div className="chat-head-actions"><Status status={selected.status}/><button className="icon-btn"><MoreVertical size={19}/></button></div></div>
-      <div className="chat-body">{messages.filter(m=>m.ticketId===selected.id).map(m=><div key={m.id} className={m.mine?"bubble mine":"bubble"}>{m.text}<small>{m.time} {m.mine&&<Check size={12}/>}</small></div>)}</div>
-      <div className="chat-compose"><button><Paperclip size={20}/></button><input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")send()}} placeholder="Digite uma mensagem..."/><button className="send-btn" onClick={send}><Send size={19}/></button></div>
-    </>:<div className="empty">Selecione um atendimento</div>}</section>
-    <aside className="contact-drawer panel">{selected&&<><div className="profile-avatar">{initials(selected.name)}</div><h3>{selected.name}</h3><p>+{selected.phone}</p><div className="detail-list"><div><small>Fila</small><strong>{selected.queue}</strong></div><div><small>Status</small><Status status={selected.status}/></div><div><small>Protocolo</small><strong>#{selected.id}</strong></div></div><div className="drawer-actions"><button onClick={()=>setTickets(tickets.map(t=>t.id===selected.id?{...t,status:"pending"}:t))}>Aguardar</button><button className="success" onClick={()=>setTickets(tickets.map(t=>t.id===selected.id?{...t,status:"closed"}:t))}>Finalizar</button></div></>}</aside>
-  </div>;
+function Login({onSuccess}:{onSuccess:(s:Session)=>void}){
+  const [email,setEmail]=useState(""); const [password,setPassword]=useState(""); const [error,setError]=useState(""); const [loading,setLoading]=useState(false);
+  async function submit(e:React.FormEvent){e.preventDefault();setError("");setLoading(true);try{
+    if(isPreview){onSuccess({token:"preview",user:{id:"preview",name:"Administrador",email:email||"preview@zapmodel.local",role:"OWNER",companyId:"preview"}});return;}
+    const data=await request<Session>("/api/auth/login",{method:"POST",body:JSON.stringify({email,password})});onSuccess(data);
+  }catch(err:any){setError(err.message)}finally{setLoading(false)}}
+  return <div className="login-page"><form className="login-card" onSubmit={submit}><div className="login-logo"><MessageCircleMore size={34}/></div><h1>ZapModel</h1><p>Central omnichannel de atendimento.</p><label>E-mail<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required placeholder="voce@empresa.com"/></label><label>Senha<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required placeholder="••••••••"/></label>{error?<div className="form-error">{error}</div>:null}<button className="primary-btn login-btn" disabled={loading}>{loading?"Entrando...":"Entrar"}</button>{isPreview?<small className="login-note">Preview do Lovable: qualquer e-mail e senha permitem visualizar. Em produção, a autenticação é feita pelo backend.</small>:null}</form></div>
 }
 
-function ConnectionsPage(){const [status,setStatus]=useStoredState("zapmodel-connection","CONNECTED"); const [qr,setQr]=useState(false);return <div className="stack"><PageActions title="Conexões WhatsApp" subtitle="Gerencie os números conectados à plataforma" action="Nova conexão"/>
-<section className="panel connection-card"><div className="connection-main"><div className="wa-icon"><MessageCircleMore/></div><div><h3>WhatsApp Principal</h3><p>+55 38 99999-0000</p><span className={status==="CONNECTED"?"connection-status on":"connection-status"}><i/>{status==="CONNECTED"?"Conectado":"Desconectado"}</span></div></div><div className="connection-info"><div><small>Última atualização</small><strong>Agora</strong></div><div><small>Sessão</small><strong>Baileys</strong></div><div className="connection-buttons"><button onClick={()=>setQr(true)}><QrCode size={17}/> QR Code</button><button onClick={()=>setStatus(status==="CONNECTED"?"DISCONNECTED":"CONNECTED")}>{status==="CONNECTED"?"Desconectar":"Reconectar"}</button></div></div></section>
-{qr&&<Modal title="Conectar WhatsApp" onClose={()=>setQr(false)}><div className="fake-qr"><QrCode size={170}/></div><p className="center muted">No WhatsApp, abra <b>Aparelhos conectados</b> e leia o QR Code.</p><button className="primary-btn full" onClick={()=>{setStatus("CONNECTED");setQr(false)}}>Simular leitura do QR Code</button></Modal>}</div>}
+function Page({active,session}:{active:NavKey;session:Session}){
+  switch(active){
+    case "dashboard": return <Dashboard session={session}/>;
+    case "tickets": return <Tickets session={session}/>;
+    case "connections": return <Connections session={session}/>;
+    case "contacts": return <Contacts session={session}/>;
+    case "queues": return <SimpleCrud session={session} title="Filas & Setores" endpoint="/api/queues" demoRows={demo.queues} fields={["name","color"]}/>;
+    case "quick": return <SimpleCrud session={session} title="Respostas rápidas" endpoint="/api/quick-messages" demoRows={demo.quick} fields={["shortcut","message"]}/>;
+    case "kanban": return <Kanban session={session}/>;
+    case "schedules": return <Schedules session={session}/>;
+    case "todo": return <Tasks session={session}/>;
+    case "campaigns": return <Campaigns session={session}/>;
+    case "files": return <Files session={session}/>;
+    case "integrations": return <Integrations session={session}/>;
+    case "users": return <UsersPage session={session}/>;
+    case "settings": return <SettingsPage session={session}/>;
+    case "chat": return <Info title="Chat interno" icon={<MessagesSquare/>} text="O módulo de chat interno permanece disponível na interface. A camada de conversas internas pode ser conectada ao mesmo Socket.IO do backend quando houver usuários adicionais."/>;
+    case "finance": return <Info title="Financeiro" icon={<CircleDollarSign/>} text="Área preparada para planos, faturas e cobrança. O atendimento e WhatsApp não dependem deste módulo para funcionar."/>;
+  }
+}
 
-function ContactsPage({contacts,setContacts}:{contacts:Contact[];setContacts:(v:Contact[])=>void}){const [search,setSearch]=useState("");const [modal,setModal]=useState(false);const [form,setForm]=useState({name:"",phone:"",email:"",tag:"Cliente"});const filtered=contacts.filter(c=>`${c.name} ${c.phone} ${c.email}`.toLowerCase().includes(search.toLowerCase()));const add=()=>{if(!form.name||!form.phone)return;setContacts([...contacts,{id:Date.now(),...form}]);setForm({name:"",phone:"",email:"",tag:"Cliente"});setModal(false)};return <div className="stack"><PageActions title="Contatos" subtitle={`${contacts.length} contatos cadastrados`} action="Novo contato" onAction={()=>setModal(true)}/><section className="panel"><Toolbar search={search} setSearch={setSearch}/><div className="simple-table contacts-table"><div className="tr th"><span>Nome</span><span>Telefone</span><span>E-mail</span><span>Tag</span><span>Ações</span></div>{filtered.map(c=><div className="tr" key={c.id}><span><AvatarName name={c.name}/></span><span>{c.phone}</span><span className="muted">{c.email||"—"}</span><span><span className="tag-pill">{c.tag}</span></span><span><button className="table-action"><Pencil size={16}/></button><button className="table-action danger" onClick={()=>setContacts(contacts.filter(x=>x.id!==c.id))}><Trash2 size={16}/></button></span></div>)}</div></section>{modal&&<Modal title="Novo contato" onClose={()=>setModal(false)}><FormField label="Nome"><input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></FormField><FormField label="Telefone"><input value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})}/></FormField><FormField label="E-mail"><input value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></FormField><FormField label="Tag"><select value={form.tag} onChange={e=>setForm({...form,tag:e.target.value})}><option>Cliente</option><option>Lead</option><option>Empresa</option><option>Suporte</option></select></FormField><button className="primary-btn full" onClick={add}>Salvar contato</button></Modal>}</div>}
+function useRemote<T>(path:string, preview:T, token:string, interval=5000){
+  const [data,setData]=useState<T>(preview); const [loading,setLoading]=useState(!isPreview); const [error,setError]=useState("");
+  const reload=useCallback(async()=>{if(isPreview){setData(preview);setLoading(false);return;}try{setData(await request<T>(path,{},token));setError("")}catch(e:any){setError(e.message)}finally{setLoading(false)}},[path,token]);
+  useEffect(()=>{reload();if(isPreview||!interval)return;const id=setInterval(reload,interval);return()=>clearInterval(id)},[reload,interval]);
+  return {data,setData,loading,error,reload};
+}
 
-function QueuesPage(){const [queues,setQueues]=useStoredState("zapmodel-queues",[{id:1,name:"Comercial",color:"#22c55e",greeting:"Olá! Você está falando com o Comercial."},{id:2,name:"Suporte",color:"#3b82f6",greeting:"Olá! Como podemos ajudar?"},{id:3,name:"Financeiro",color:"#f59e0b",greeting:"Olá! Bem-vindo ao Financeiro."}]);return <div className="stack"><PageActions title="Filas & Setores" subtitle="Organize a distribuição dos atendimentos" action="Nova fila" onAction={()=>setQueues([...queues,{id:Date.now(),name:`Nova fila ${queues.length+1}`,color:"#8b5cf6",greeting:"Mensagem de saudação"}])}/><div className="card-grid">{queues.map(q=><div className="panel queue-card" key={q.id}><div className="queue-card-head"><span className="color-dot" style={{background:q.color}}/><h3>{q.name}</h3><button className="table-action danger" onClick={()=>setQueues(queues.filter(x=>x.id!==q.id))}><Trash2 size={16}/></button></div><p>{q.greeting}</p><div className="queue-card-foot"><span><Users size={15}/> {Math.floor(Math.random()*5)+2} atendentes</span><span><MessageCircleMore size={15}/> {Math.floor(Math.random()*12)+2} em atendimento</span></div></div>)}</div></div>}
+function Dashboard({session}:{session:Session}){
+  const {data,error,reload}=useRemote<any>("/api/dashboard",demo.dashboard,session.token,7000);
+  return <div className="stack"><div className="hero"><div><span className="eyebrow"><Activity size={15}/> Operação em tempo real</span><h2>Olá, {session.user.name}!</h2><p>Acompanhe os principais indicadores da central.</p></div><button className="secondary-btn" onClick={reload}><RefreshCw size={16}/>Atualizar</button></div>{error?<Alert text={error}/>:null}<div className="stat-grid"><Stat label="Abertos" value={data.open} icon={<Headphones/>}/><Stat label="Aguardando" value={data.pending} icon={<Activity/>}/><Stat label="Finalizados" value={data.closed} icon={<CheckCircle2/>}/><Stat label="Contatos" value={data.contacts} icon={<ContactRound/>}/><Stat label="Mensagens" value={data.messages} icon={<MessagesSquare/>}/><Stat label="WhatsApp conectado" value={data.connectedSessions} icon={<Wifi/>}/></div></div>
+}
 
-function QuickMessagesPage(){const [items,setItems]=useStoredState("zapmodel-quick",[{id:1,key:"/ola",text:"Olá! Tudo bem? Como posso ajudar você hoje?"},{id:2,key:"/aguarde",text:"Só um instante, por favor. Estou verificando sua solicitação."},{id:3,key:"/finalizar",text:"Foi um prazer atender você! Se precisar, estamos à disposição."}]);return <div className="stack"><PageActions title="Respostas rápidas" subtitle="Atalhos para mensagens usadas com frequência" action="Nova resposta" onAction={()=>setItems([...items,{id:Date.now(),key:`/atalho${items.length+1}`,text:"Edite esta nova resposta rápida."}])}/><section className="panel"><div className="simple-table"><div className="tr th quick-row"><span>Atalho</span><span>Mensagem</span><span>Ações</span></div>{items.map(i=><div className="tr quick-row" key={i.id}><span><code>{i.key}</code></span><span>{i.text}</span><span><button className="table-action danger" onClick={()=>setItems(items.filter(x=>x.id!==i.id))}><Trash2 size={16}/></button></span></div>)}</div></section></div>}
+function Tickets({session}:{session:Session}){
+  const r=useRemote<any[]>("/api/tickets",demo.tickets,session.token,4000); const [selected,setSelected]=useState<string>(""); const [messages,setMessages]=useState<any[]>([]); const [text,setText]=useState(""); const ticket=r.data.find(t=>t.id===(selected||r.data[0]?.id));
+  useEffect(()=>{if(!ticket||isPreview){setMessages(ticket?.id==="t1"?[{id:"m1",fromMe:false,body:"Gostaria de conhecer os planos",createdAt:new Date().toISOString()}]:[]);return;}request<any[]>(`/api/tickets/${ticket.id}/messages`,{},session.token).then(setMessages).catch(()=>{})},[ticket?.id,session.token]);
+  async function send(){if(!ticket||!text.trim())return;if(isPreview){setMessages(v=>[...v,{id:Date.now(),fromMe:true,body:text,createdAt:new Date().toISOString()}]);setText("");return;}try{const m=await request<any>(`/api/tickets/${ticket.id}/messages`,{method:"POST",body:JSON.stringify({body:text})},session.token);setMessages(v=>[...v,m]);setText("");r.reload()}catch(e:any){alert(e.message)}}
+  async function status(status:string){if(!ticket)return;if(isPreview)return;await request(`/api/tickets/${ticket.id}`,{method:"PATCH",body:JSON.stringify({status})},session.token);r.reload()}
+  return <div className="ticket-layout"><section className="panel ticket-list"><div className="toolbar"><div className="search-box"><Search size={16}/><input placeholder="Buscar atendimento"/></div><button className="icon-btn" onClick={r.reload}><RefreshCw size={16}/></button></div>{r.data.map(t=><button key={t.id} className={`ticket-card ${ticket?.id===t.id?"selected":""}`} onClick={()=>setSelected(t.id)}><div className="avatar">{initials(t.contact?.name||"C")}</div><div><strong>{t.contact?.name}</strong><small>{t.queue?.name||"Sem fila"}</small><p>{t.lastMessage||"Sem mensagens"}</p></div>{t.unread?<em>{t.unread}</em>:null}</button>)}</section><section className="panel conversation">{ticket?<><div className="conversation-head"><div><strong>{ticket.contact?.name}</strong><small>{ticket.contact?.number} • {ticket.session?.name||"Sem conexão"}</small></div><div className="row-actions"><button onClick={()=>status("PENDING")}>Aguardar</button><button onClick={()=>status("CLOSED")}>Finalizar</button></div></div><div className="messages">{messages.map(m=><div key={m.id} className={m.fromMe?"bubble mine":"bubble"}><p>{m.body||"Arquivo"}</p><small>{new Date(m.createdAt).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</small></div>)}</div><div className="composer"><input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")send()}} placeholder="Digite uma mensagem..."/><button className="primary-btn" onClick={send}><Send size={17}/></button></div></>:<Empty text="Nenhum atendimento"/>}</section></div>
+}
 
-function KanbanPage(){const [cards,setCards]=useStoredState("zapmodel-kanban",[{id:1,title:"Maria Oliveira",col:"Novo",note:"Interessada no plano empresarial"},{id:2,title:"Carlos Souza",col:"Em negociação",note:"Aguardando proposta"},{id:3,title:"Empresa Horizonte",col:"Em negociação",note:"Follow-up amanhã"},{id:4,title:"João Martins",col:"Concluído",note:"Contrato enviado"}]);const cols=["Novo","Em negociação","Concluído"];const move=(id:number,dir:number)=>setCards(cards.map(c=>{if(c.id!==id)return c;const i=cols.indexOf(c.col);return {...c,col:cols[Math.max(0,Math.min(cols.length-1,i+dir))]}}));return <div className="stack"><PageActions title="Kanban" subtitle="Acompanhe oportunidades e etapas do atendimento" action="Novo card" onAction={()=>setCards([...cards,{id:Date.now(),title:"Novo contato",col:"Novo",note:"Nova oportunidade"}])}/><div className="kanban-board">{cols.map(col=><section className="kanban-col" key={col}><div className="kanban-title"><span>{col}</span><b>{cards.filter(c=>c.col===col).length}</b></div>{cards.filter(c=>c.col===col).map(c=><article className="kanban-card" key={c.id}><h4>{c.title}</h4><p>{c.note}</p><div><button disabled={col===cols[0]} onClick={()=>move(c.id,-1)}>←</button><button disabled={col===cols[2]} onClick={()=>move(c.id,1)}>→</button></div></article>)}</section>)}</div></div>}
+function Connections({session}:{session:Session}){
+  const r=useRemote<any[]>("/api/whatsapp",demo.whatsapp,session.token,3500);
+  async function add(){const name=prompt("Nome da conexão:","Principal");if(!name)return;if(isPreview)return alert("No preview o QR é apenas ilustrativo. Configure VITE_API_URL para conexão real.");await request("/api/whatsapp",{method:"POST",body:JSON.stringify({name})},session.token);r.reload()}
+  async function action(id:string,kind:"connect"|"disconnect"){if(isPreview)return;await request(`/api/whatsapp/${id}/${kind}`,{method:"POST",body:JSON.stringify(kind==="disconnect"?{logout:false}:{})},session.token);r.reload()}
+  return <div className="stack"><div className="page-actions"><p>Gerencie sessões persistentes do WhatsApp.</p><button className="primary-btn" onClick={add}><Plus size={16}/>Nova conexão</button></div><div className="cards-grid">{r.data.map(w=><div className="panel connection-card" key={w.id}><div className="connection-icon"><MessageCircleMore/></div><h3>{w.name}</h3><p>{w.phone||"Aguardando leitura do QR Code"}</p><span className={`status ${String(w.status).toLowerCase()}`}>{w.status}</span>{w.qr?<img className="qr-real" src={w.qr} alt="QR Code WhatsApp"/>:null}<div className="row-actions"><button onClick={()=>action(w.id,"connect")}>Conectar</button><button onClick={()=>action(w.id,"disconnect")}>Desconectar</button></div></div>)}</div></div>
+}
 
-function SchedulesPage(){const [items,setItems]=useStoredState("zapmodel-schedules",[{id:1,name:"Maria Oliveira",date:"11/09/2026 09:00",text:"Enviar apresentação comercial",status:"Agendado"},{id:2,name:"Empresa Horizonte",date:"11/09/2026 14:30",text:"Confirmar recebimento da fatura",status:"Agendado"},{id:3,name:"Carlos Souza",date:"12/09/2026 10:00",text:"Realizar follow-up",status:"Pendente"}]);return <div className="stack"><PageActions title="Agendamentos" subtitle="Mensagens e compromissos programados" action="Novo agendamento" onAction={()=>setItems([...items,{id:Date.now(),name:"Novo contato",date:"12/09/2026 15:00",text:"Nova mensagem agendada",status:"Agendado"}])}/><section className="panel"><div className="simple-table"><div className="tr th schedule-row"><span>Contato</span><span>Data e hora</span><span>Mensagem</span><span>Status</span></div>{items.map(i=><div className="tr schedule-row" key={i.id}><span><AvatarName name={i.name}/></span><span>{i.date}</span><span>{i.text}</span><span><span className="tag-pill">{i.status}</span></span></div>)}</div></section></div>}
+function Contacts({session}:{session:Session}){
+  const r=useRemote<any[]>("/api/contacts",demo.contacts,session.token,5000); const [q,setQ]=useState(""); const rows=useMemo(()=>r.data.filter(c=>`${c.name} ${c.number} ${c.email||""}`.toLowerCase().includes(q.toLowerCase())),[r.data,q]);
+  async function add(){const name=prompt("Nome do contato:");if(!name)return;const number=prompt("Número com DDI e DDD:");if(!number)return;const email=prompt("E-mail (opcional):")||"";if(isPreview){r.setData(v=>[...v,{id:String(Date.now()),name,number,email}]);return;}await request("/api/contacts",{method:"POST",body:JSON.stringify({name,number,email})},session.token);r.reload()}
+  async function del(id:string){if(!confirm("Excluir este contato?"))return;if(isPreview){r.setData(v=>v.filter(x=>x.id!==id));return;}await request(`/api/contacts/${id}`,{method:"DELETE"},session.token);r.reload()}
+  return <div className="stack"><div className="page-actions"><div className="search-box wide"><Search size={16}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar contato"/></div><button className="primary-btn" onClick={add}><Plus size={16}/>Novo contato</button></div><section className="panel"><Table heads={["Nome","Número","E-mail",""]} rows={rows.map(c=>[<AvatarName name={c.name}/>,c.number,c.email||"—",<button className="danger-icon" onClick={()=>del(c.id)}><Trash2 size={16}/></button>])}/></section></div>
+}
 
-function TodoPage(){const [items,setItems]=useStoredState("zapmodel-todo",[{id:1,text:"Revisar atendimentos pendentes",done:false},{id:2,text:"Atualizar mensagem automática da fila Comercial",done:true},{id:3,text:"Retornar contato da Empresa Horizonte",done:false}]);const [text,setText]=useState("");return <div className="stack"><PageActions title="Tarefas" subtitle="Organize as atividades da equipe"/><section className="panel todo-panel"><div className="todo-add"><input placeholder="Nova tarefa..." value={text} onChange={e=>setText(e.target.value)}/><button className="primary-btn" onClick={()=>{if(text.trim()){setItems([...items,{id:Date.now(),text,done:false}]);setText("")}}}><Plus size={17}/> Adicionar</button></div>{items.map(i=><div className={i.done?"todo-item done":"todo-item"} key={i.id}><button onClick={()=>setItems(items.map(x=>x.id===i.id?{...x,done:!x.done}:x))}>{i.done?<CheckCircle2/>:<span/>}</button><p>{i.text}</p><button className="table-action danger" onClick={()=>setItems(items.filter(x=>x.id!==i.id))}><Trash2 size={16}/></button></div>)}</section></div>}
+function SimpleCrud({session,title,endpoint,demoRows,fields}:{session:Session;title:string;endpoint:string;demoRows:any[];fields:string[]}){
+  const r=useRemote<any[]>(endpoint,demoRows,session.token,5000);
+  async function add(){const body:any={};for(const f of fields){const v=prompt(`${label(f)}:`);if(v===null)return;body[f]=v}if(isPreview){r.setData(v=>[...v,{id:String(Date.now()),...body}]);return;}await request(endpoint,{method:"POST",body:JSON.stringify(body)},session.token);r.reload()}
+  async function del(id:string){if(isPreview){r.setData(v=>v.filter(x=>x.id!==id));return;}await request(`${endpoint}/${id}`,{method:"DELETE"},session.token);r.reload()}
+  return <div className="stack"><div className="page-actions"><p>Cadastros de {title.toLowerCase()}.</p><button className="primary-btn" onClick={add}><Plus size={16}/>Novo</button></div><section className="panel"><Table heads={[...fields.map(label),""]} rows={r.data.map(row=>[...fields.map(f=>row[f]||"—"),<button className="danger-icon" onClick={()=>del(row.id)}><Trash2 size={16}/></button>])}/></section></div>
+}
 
-function CampaignsPage(){const [campaigns,setCampaigns]=useStoredState("zapmodel-campaigns",[{id:1,name:"Renovação de clientes",list:"Clientes ativos",sent:842,total:1000,status:"Em andamento"},{id:2,name:"Novidades Setembro",list:"Leads 2026",sent:520,total:520,status:"Finalizada"},{id:3,name:"Pesquisa de satisfação",list:"Pós-venda",sent:0,total:315,status:"Programada"}]);return <div className="stack"><PageActions title="Campanhas" subtitle="Envios em massa, listas e acompanhamento" action="Nova campanha" onAction={()=>setCampaigns([...campaigns,{id:Date.now(),name:"Nova campanha",list:"Todos os contatos",sent:0,total:100,status:"Rascunho"}])}/><div className="card-grid campaign-grid">{campaigns.map(c=><div className="panel campaign-card" key={c.id}><div className="campaign-head"><Megaphone/><StatusText text={c.status}/></div><h3>{c.name}</h3><p>Lista: {c.list}</p><Progress label={`${c.sent} de ${c.total} enviados`} value={Math.round(c.sent/c.total*100)||0} count={Math.round(c.sent/c.total*100)||0}/><div className="campaign-actions"><button>Relatório</button><button onClick={()=>setCampaigns(campaigns.filter(x=>x.id!==c.id))}><Trash2 size={15}/></button></div></div>)}</div></div>}
+function Kanban({session}:{session:Session}){const r=useRemote<any[]>("/api/tickets",demo.tickets,session.token,4000);const columns=[{s:"OPEN",t:"Em atendimento"},{s:"PENDING",t:"Aguardando"},{s:"CLOSED",t:"Finalizados"}];return <div className="kanban-board">{columns.map(c=><section className="kanban-col" key={c.s}><h3>{c.t}<span>{r.data.filter(t=>t.status===c.s).length}</span></h3>{r.data.filter(t=>t.status===c.s).map(t=><div className="kanban-card" key={t.id}><strong>{t.contact?.name}</strong><p>{t.lastMessage||"Sem mensagens"}</p><small>{t.queue?.name||"Sem fila"}</small></div>)}</section>)}</div>}
 
-function InternalChat(){const [text,setText]=useState("");const [msgs,setMsgs]=useStoredState("zapmodel-internal-chat",[{id:1,name:"Ana",mine:false,text:"Bom dia! O atendimento 1002 ficou com o Suporte.",time:"20:12"},{id:2,name:"Você",mine:true,text:"Perfeito, obrigado!",time:"20:13"}]);return <div className="internal-chat panel"><div className="room-list"><h3>Conversas</h3><button className="room active"><div className="avatar">ES</div><span><b>Equipe Suporte</b><small>4 participantes</small></span></button><button className="room"><div className="avatar">CO</div><span><b>Comercial</b><small>6 participantes</small></span></button></div><div className="room-chat"><div className="room-head"><b>Equipe Suporte</b><span>4 membros online</span></div><div className="chat-body">{msgs.map(m=><div className={m.mine?"bubble mine":"bubble"} key={m.id}>{!m.mine&&<b className="sender">{m.name}</b>}{m.text}<small>{m.time}</small></div>)}</div><div className="chat-compose"><input value={text} onChange={e=>setText(e.target.value)} placeholder="Mensagem para a equipe..."/><button className="send-btn" onClick={()=>{if(text.trim()){setMsgs([...msgs,{id:Date.now(),name:"Você",mine:true,text,time:new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}]);setText("")}}}><Send size={18}/></button></div></div></div>}
+function Schedules({session}:{session:Session}){const r=useRemote<any[]>("/api/schedules",demo.schedules,session.token,5000);async function add(){const title=prompt("Título:");if(!title)return;const body=prompt("Mensagem:")||"";const contactNumber=prompt("Número do contato:")||"";const scheduledAt=prompt("Data/hora (AAAA-MM-DDTHH:mm):",new Date(Date.now()+3600000).toISOString().slice(0,16));if(!scheduledAt)return;if(isPreview){r.setData(v=>[...v,{id:String(Date.now()),title,body,contactNumber,scheduledAt:new Date(scheduledAt).toISOString()}]);return;}await request("/api/schedules",{method:"POST",body:JSON.stringify({title,body,contactNumber,scheduledAt})},session.token);r.reload()}return <ListPanel title="Agendamentos" action={add} heads={["Título","Destino","Agendado para","Enviado"]} rows={r.data.map(x=>[x.title,x.contactNumber||"—",fmt(x.scheduledAt),x.sentAt?"Sim":"Não"])} />}
 
-function FilesPage(){const [files,setFiles]=useStoredState("zapmodel-files",[{id:1,name:"Tabela-de-precos.pdf",size:"1,2 MB",type:"PDF"},{id:2,name:"Apresentacao-comercial.pdf",size:"3,7 MB",type:"PDF"},{id:3,name:"Manual-suporte.docx",size:"842 KB",type:"DOCX"}]);return <div className="stack"><PageActions title="Arquivos" subtitle="Biblioteca compartilhada para os atendimentos" action="Adicionar arquivo" onAction={()=>setFiles([...files,{id:Date.now(),name:`arquivo-${files.length+1}.pdf`,size:"320 KB",type:"PDF"}])}/><div className="file-grid">{files.map(f=><div className="panel file-card" key={f.id}><div className="file-icon"><FileText/></div><h4>{f.name}</h4><p>{f.type} • {f.size}</p><button className="table-action danger" onClick={()=>setFiles(files.filter(x=>x.id!==f.id))}><Trash2 size={16}/></button></div>)}</div></div>}
+function Tasks({session}:{session:Session}){const r=useRemote<any[]>("/api/tasks",demo.tasks,session.token,5000);async function add(){const title=prompt("Título da tarefa:");if(!title)return;if(isPreview){r.setData(v=>[...v,{id:String(Date.now()),title,status:"TODO"}]);return;}await request("/api/tasks",{method:"POST",body:JSON.stringify({title})},session.token);r.reload()}async function advance(x:any){const next=x.status==="TODO"?"DOING":x.status==="DOING"?"DONE":"TODO";if(isPreview){r.setData(v=>v.map(i=>i.id===x.id?{...i,status:next}:i));return;}await request(`/api/tasks/${x.id}`,{method:"PATCH",body:JSON.stringify({status:next})},session.token);r.reload()}return <div className="stack"><div className="page-actions"><p>Organize atividades da equipe.</p><button className="primary-btn" onClick={add}><Plus size={16}/>Nova tarefa</button></div><div className="cards-grid">{r.data.map(x=><div className="panel task-card" key={x.id}><Tag size={18}/><h3>{x.title}</h3><p>{x.description||"Sem descrição"}</p><button onClick={()=>advance(x)}>{x.status}</button></div>)}</div></div>}
 
-function IntegrationsPage(){return <div className="stack"><PageActions title="Integrações & API" subtitle="Conecte automações e serviços externos"/><div className="card-grid"><Integration icon={<Activity/>} title="Webhook" desc="Receba eventos de tickets, mensagens e contatos" status="Ativo"/><Integration icon={<Sparkles/>} title="OpenAI" desc="Prompts e assistência por inteligência artificial" status="Configurar"/><Integration icon={<PlugZap/>} title="Typebot" desc="Integração de fluxos automatizados" status="Configurar"/><Integration icon={<Wifi/>} title="n8n" desc="Automação de processos e integrações" status="Configurar"/></div><section className="panel api-box"><PanelTitle title="Endpoint de mensagens" subtitle="Utilize este endereço para integrações externas"/><code>POST https://api.seudominio.com/api/messages/send</code><div className="token-row"><span>Token da API</span><code>zm_live_••••••••••••••••f82a</code><button>Copiar</button></div></section></div>}
+function Campaigns({session}:{session:Session}){const r=useRemote<any[]>("/api/campaigns",demo.campaigns,session.token,6000);async function add(){const name=prompt("Nome da campanha:");if(!name)return;const message=prompt("Mensagem:");if(!message)return;if(isPreview){r.setData(v=>[...v,{id:String(Date.now()),name,message,status:"DRAFT",_count:{contacts:0}}]);return;}await request("/api/campaigns",{method:"POST",body:JSON.stringify({name,message,contactIds:[]})},session.token);r.reload()}async function start(id:string){if(isPreview){r.setData(v=>v.map(x=>x.id===id?{...x,status:"RUNNING"}:x));return;}await request(`/api/campaigns/${id}/start`,{method:"POST"},session.token);r.reload()}return <div className="stack"><div className="page-actions"><p>Crie e acompanhe disparos para listas autorizadas.</p><button className="primary-btn" onClick={add}><Plus size={16}/>Nova campanha</button></div><section className="panel"><Table heads={["Campanha","Status","Destinatários",""]} rows={r.data.map(x=>[x.name,x.status,x._count?.contacts??0,<button onClick={()=>start(x.id)}>Iniciar</button>])}/></section></div>}
 
-function UsersPage(){const [users,setUsers]=useStoredState("zapmodel-users",[{id:1,name:"Administrador",email:"admin@empresa.com",role:"Administrador",status:"Online"},{id:2,name:"Ana Martins",email:"ana@empresa.com",role:"Atendente",status:"Online"},{id:3,name:"Paulo Souza",email:"paulo@empresa.com",role:"Atendente",status:"Offline"}]);return <div className="stack"><PageActions title="Usuários" subtitle="Gerencie acessos e permissões" action="Novo usuário" onAction={()=>setUsers([...users,{id:Date.now(),name:`Usuário ${users.length+1}`,email:`usuario${users.length+1}@empresa.com`,role:"Atendente",status:"Offline"}])}/><section className="panel"><div className="simple-table"><div className="tr th user-row"><span>Usuário</span><span>E-mail</span><span>Perfil</span><span>Status</span><span>Ações</span></div>{users.map(u=><div className="tr user-row" key={u.id}><span><AvatarName name={u.name}/></span><span>{u.email}</span><span>{u.role}</span><span><span className={u.status==="Online"?"connection-status on":"connection-status"}><i/>{u.status}</span></span><span><button className="table-action danger" disabled={u.id===1} onClick={()=>setUsers(users.filter(x=>x.id!==u.id))}><Trash2 size={16}/></button></span></div>)}</div></section></div>}
+function Files({session}:{session:Session}){const r=useRemote<any[]>("/api/files",demo.files,session.token,6000);async function uploadFile(e:React.ChangeEvent<HTMLInputElement>){const file=e.target.files?.[0];if(!file)return;if(isPreview){r.setData(v=>[{id:String(Date.now()),name:file.name,size:file.size,mimeType:file.type,createdAt:new Date().toISOString()},...v]);return;}const form=new FormData();form.append("file",file);try{const row=await request<any>("/api/files",{method:"POST",body:form},session.token);r.setData(v=>[row,...v])}catch(err:any){alert(err.message)}}return <div className="stack"><div className="page-actions"><p>Biblioteca persistente de arquivos.</p><label className="primary-btn file-button"><Plus size={16}/>Enviar arquivo<input type="file" hidden onChange={uploadFile}/></label></div><section className="panel"><Table heads={["Arquivo","Tipo","Tamanho","Data"]} rows={r.data.map(x=>[x.name,x.mimeType||"—",x.size?`${Math.round(x.size/1024)} KB`:"—",x.createdAt?fmt(x.createdAt):"—"])}/></section></div>}
 
-function FinancePage(){return <div className="stack"><PageActions title="Financeiro" subtitle="Plano, assinatura e consumo"/><div className="stat-grid"><Stat icon={<CircleDollarSign/>} label="Plano atual" value="PRO" trend="Renova em 01/10/2026" tone="green"/><Stat icon={<Users/>} label="Usuários" value="3 / 10" trend="7 vagas disponíveis" tone="blue"/><Stat icon={<MessageCircleMore/>} label="Conexões" value="1 / 5" trend="4 conexões disponíveis" tone="violet"/><Stat icon={<Activity/>} label="Mensagens no mês" value="8.492" trend="Dentro do limite" tone="amber"/></div><section className="panel billing-card"><div><span className="eyebrow">Plano profissional</span><h2>R$ 199,90 <small>/ mês</small></h2><p>Atendimento omnichannel com campanhas, integrações e múltiplos usuários.</p></div><button className="primary-btn">Gerenciar assinatura</button></section></div>}
+function Integrations({session}:{session:Session}){const r=useRemote<any[]>("/api/api-tokens",[],session.token,0);const [newToken,setNewToken]=useState("");async function add(){if(isPreview){setNewToken("zm_preview_token_exemplo");return;}const name=prompt("Nome do token:","Integração");if(!name)return;const row=await request<any>("/api/api-tokens",{method:"POST",body:JSON.stringify({name})},session.token);setNewToken(row.token);r.reload()}return <div className="stack"><div className="hero"><div><h2>API externa</h2><p>Envie mensagens por integração usando uma chave de API.</p></div><button className="primary-btn" onClick={add}><Plus size={16}/>Gerar token</button></div>{newToken?<div className="panel token-box"><strong>Copie agora — o token completo é exibido somente neste momento:</strong><code>{newToken}</code></div>:null}<section className="panel"><Table heads={["Nome","Ativo","Criado em"]} rows={r.data.map(x=>[x.name,x.active?"Sim":"Não",fmt(x.createdAt)])}/></section><section className="panel api-help"><h3>Envio por API</h3><code>POST {API||"https://api.seudominio.com"}/api/v1/messages/send</code><p>Header: <b>X-API-Key</b> • Body JSON: <b>number</b> e <b>message</b>.</p></section></div>}
 
-function SettingsPage(){const [saved,setSaved]=useState(false);const [company,setCompany]=useStoredState("zapmodel-company",{name:"Minha Empresa",email:"contato@empresa.com",timezone:"America/Sao_Paulo",transfer:"30",dark:false});return <div className="settings-grid"><section className="panel settings-menu"><button className="active"><Settings/> Geral</button><button><MessageCircleMore/> Atendimento</button><button><Bell/> Notificações</button><button><ShieldCheck/> Segurança</button></section><section className="panel settings-form"><PanelTitle title="Configurações gerais" subtitle="Dados e preferências da plataforma"/><div className="form-grid"><FormField label="Nome da empresa"><input value={company.name} onChange={e=>setCompany({...company,name:e.target.value})}/></FormField><FormField label="E-mail"><input value={company.email} onChange={e=>setCompany({...company,email:e.target.value})}/></FormField><FormField label="Fuso horário"><select value={company.timezone} onChange={e=>setCompany({...company,timezone:e.target.value})}><option>America/Sao_Paulo</option><option>America/Manaus</option></select></FormField><FormField label="Transferência automática (min)"><input value={company.transfer} onChange={e=>setCompany({...company,transfer:e.target.value})}/></FormField></div><div className="switch-row"><div><b>Modo escuro</b><p>Preferência visual dos usuários</p></div><button className={company.dark?"switch on":"switch"} onClick={()=>setCompany({...company,dark:!company.dark})}><span/></button></div><button className="primary-btn" onClick={()=>{setSaved(true);setTimeout(()=>setSaved(false),1800)}}>{saved?<><Check size={17}/> Salvo</>:"Salvar alterações"}</button></section></div>}
+function UsersPage({session}:{session:Session}){const r=useRemote<any[]>("/api/users",demo.users,session.token,8000);async function add(){const name=prompt("Nome:");if(!name)return;const email=prompt("E-mail:");if(!email)return;const password=prompt("Senha (mín. 8 caracteres):");if(!password)return;if(isPreview){r.setData(v=>[...v,{id:String(Date.now()),name,email,role:"AGENT",active:true}]);return;}await request("/api/users",{method:"POST",body:JSON.stringify({name,email,password,role:"AGENT"})},session.token);r.reload()}return <ListPanel title="Usuários" action={add} heads={["Nome","E-mail","Perfil","Ativo"]} rows={r.data.map(x=>[x.name,x.email,x.role,x.active?"Sim":"Não"])} />}
 
-function Stat({icon,label,value,trend,tone}:{icon:ReactNode;label:string;value:string|number;trend:string;tone:string}){return <div className="panel stat-card"><div className={`stat-icon ${tone}`}>{icon}</div><div><p>{label}</p><h3>{value}</h3><small>{trend}</small></div></div>}
-function PanelTitle({title,subtitle}:{title:string;subtitle:string}){return <div className="panel-title"><div><h3>{title}</h3><p>{subtitle}</p></div><button className="icon-btn"><MoreVertical size={18}/></button></div>}
-function Progress({label,value,count}:{label:string;value:number;count:number}){return <div className="progress-row"><div><span>{label}</span><b>{count}</b></div><div className="progress-track"><i style={{width:`${Math.max(0,Math.min(value,100))}%`}}/></div></div>}
-function Status({status}:{status:TicketStatus}){const map={open:["Aberto","green"],pending:["Aguardando","amber"],closed:["Finalizado","gray"]} as const;return <span className={`status ${map[status][1]}`}><i/>{map[status][0]}</span>}
-function StatusText({text}:{text:string}){return <span className="tag-pill">{text}</span>}
-function initials(name:string){return name.split(" ").slice(0,2).map(x=>x[0]).join("").toUpperCase()}
-function AvatarName({name}:{name:string}){return <span className="avatar-name"><span className="avatar">{initials(name)}</span><strong>{name}</strong></span>}
-function PageActions({title,subtitle,action,onAction}:{title:string;subtitle:string;action?:string;onAction?:()=>void}){return <div className="page-actions"><div><h2>{title}</h2><p>{subtitle}</p></div>{action&&<button className="primary-btn" onClick={onAction}><Plus size={17}/>{action}</button>}</div>}
-function Toolbar({search,setSearch}:{search:string;setSearch:(v:string)=>void}){return <div className="toolbar"><div className="searchbox wide"><Search size={17}/><input placeholder="Pesquisar..." value={search} onChange={e=>setSearch(e.target.value)}/></div><button className="secondary-btn"><Filter size={16}/> Filtros <ChevronDown size={15}/></button></div>}
-function Modal({title,onClose,children}:{title:string;onClose:()=>void;children:ReactNode}){return <div className="modal-backdrop"><div className="modal"><div className="modal-head"><h3>{title}</h3><button onClick={onClose}><X size={20}/></button></div><div className="modal-body">{children}</div></div></div>}
-function FormField({label,children}:{label:string;children:ReactNode}){return <label className="form-field"><span>{label}</span>{children}</label>}
-function Integration({icon,title,desc,status}:{icon:ReactNode;title:string;desc:string;status:string}){return <div className="panel integration-card"><div className="integration-icon">{icon}</div><div><h3>{title}</h3><p>{desc}</p></div><button>{status}</button></div>}
+function SettingsPage({session}:{session:Session}){const r=useRemote<any[]>("/api/settings",demo.settings,session.token,0);const [key,setKey]=useState("");const [value,setValue]=useState("");async function save(){if(!key.trim())return;if(isPreview){r.setData(v=>[...v.filter(x=>x.key!==key),{id:key,key,value}]);return;}await request(`/api/settings/${encodeURIComponent(key)}`,{method:"PUT",body:JSON.stringify({value})},session.token);r.reload()}return <div className="stack"><section className="panel settings-form"><h3>Configuração</h3><div className="inline-form"><input value={key} onChange={e=>setKey(e.target.value)} placeholder="Chave"/><input value={value} onChange={e=>setValue(e.target.value)} placeholder="Valor"/><button className="primary-btn" onClick={save}>Salvar</button></div></section><section className="panel"><Table heads={["Chave","Valor"]} rows={r.data.map(x=>[x.key,x.value])}/></section></div>}
+
+function ListPanel({title,action,heads,rows}:{title:string;action:()=>void;heads:string[];rows:ReactNode[][]}){return <div className="stack"><div className="page-actions"><p>{title}</p><button className="primary-btn" onClick={action}><Plus size={16}/>Novo</button></div><section className="panel"><Table heads={heads} rows={rows}/></section></div>}
+function Table({heads,rows}:{heads:string[];rows:ReactNode[][]}){return <div className="data-table"><div className="data-row data-head">{heads.map((h,i)=><span key={i}>{h}</span>)}</div>{rows.map((r,i)=><div className="data-row" key={i}>{r.map((c,j)=><span key={j}>{c}</span>)}</div>)}{!rows.length?<Empty text="Nenhum registro"/>:null}</div>}
+function Stat({label,value,icon}:{label:string;value:any;icon:ReactNode}){return <div className="stat-card"><div className="stat-icon">{icon}</div><div><small>{label}</small><strong>{value??0}</strong></div></div>}
+function AvatarName({name}:{name:string}){return <span className="avatar-name"><i className="avatar small">{initials(name)}</i><b>{name}</b></span>}
+function Alert({text}:{text:string}){return <div className="form-error">{text}</div>}
+function Empty({text}:{text:string}){return <div className="empty-state">{text}</div>}
+function Info({title,icon,text}:{title:string;icon:ReactNode;text:string}){return <div className="panel info-card"><div className="connection-icon">{icon}</div><h2>{title}</h2><p>{text}</p></div>}
+function initials(name:string){return name.split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join("").toUpperCase()||"ZM"}
+function fmt(v:string){try{return new Date(v).toLocaleString("pt-BR")}catch{return v}}
+function label(v:string){return ({name:"Nome",color:"Cor",shortcut:"Atalho",message:"Mensagem"} as any)[v]||v}
