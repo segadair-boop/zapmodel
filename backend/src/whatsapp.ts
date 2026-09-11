@@ -222,24 +222,59 @@ export function isSessionConnected(sessionId: string) {
   return sockets.has(sessionId);
 }
 
-function jidFor(number: string) {
+function pnJidFor(number: string) {
   const clean = number.replace(/\D/g, '');
   if (!clean) throw new Error('Número de telefone inválido');
   return `${clean}@s.whatsapp.net`;
 }
 
-export async function sendText(sessionId: string, number: string, text: string) {
-  const sock = sockets.get(sessionId);
-  if (!sock) throw new Error('WhatsApp não está conectado');
-  return sock.sendMessage(jidFor(number), { text });
+/**
+ * Resolve o destino de envio. Aceita número puro ou alvo com whatsappJid.
+ * Retorna o JID a usar e, quando aplicável, o PN resolvido a partir de um LID.
+ */
+async function resolveSendTarget(
+  sock: WASocket,
+  target: SendTarget | string
+): Promise<{ jid: string; resolvedPn: string | null }> {
+  const normalized: SendTarget = typeof target === 'string' ? { number: target } : target;
+  const storedJid = normalizeJid(normalized.whatsappJid);
+  const number = (normalized.number || '').replace(/\D/g, '');
+
+  if (storedJid && isLid(storedJid)) {
+    const pn = await lidToPn(sock, storedJid);
+    if (pn && isPnJid(pn)) return { jid: pn, resolvedPn: numberFromPnJid(pn) };
+    return { jid: storedJid, resolvedPn: null };
+  }
+
+  if (storedJid && isPnJid(storedJid)) return { jid: storedJid, resolvedPn: null };
+  if (number) return { jid: pnJidFor(number), resolvedPn: null };
+  throw new Error('Destino de envio inválido');
 }
 
-export async function sendMedia(sessionId: string, number: string, media: Buffer, mimeType: string, fileName: string, caption?: string) {
+export async function sendText(sessionId: string, target: SendTarget | string, text: string): Promise<SendResult> {
   const sock = sockets.get(sessionId);
   if (!sock) throw new Error('WhatsApp não está conectado');
-  const jid = jidFor(number);
-  if (mimeType.startsWith('image/')) return sock.sendMessage(jid, { image: media, caption });
-  if (mimeType.startsWith('video/')) return sock.sendMessage(jid, { video: media, caption });
-  if (mimeType.startsWith('audio/')) return sock.sendMessage(jid, { audio: media, mimetype: mimeType, ptt: false });
-  return sock.sendMessage(jid, { document: media, mimetype: mimeType, fileName, caption });
+  const { jid, resolvedPn } = await resolveSendTarget(sock, target);
+  const result = await sock.sendMessage(jid, { text });
+  return { result, resolvedPn };
 }
+
+export async function sendMedia(
+  sessionId: string,
+  target: SendTarget | string,
+  media: Buffer,
+  mimeType: string,
+  fileName: string,
+  caption?: string
+): Promise<SendResult> {
+  const sock = sockets.get(sessionId);
+  if (!sock) throw new Error('WhatsApp não está conectado');
+  const { jid, resolvedPn } = await resolveSendTarget(sock, target);
+  let result: unknown;
+  if (mimeType.startsWith('image/')) result = await sock.sendMessage(jid, { image: media, caption });
+  else if (mimeType.startsWith('video/')) result = await sock.sendMessage(jid, { video: media, caption });
+  else if (mimeType.startsWith('audio/')) result = await sock.sendMessage(jid, { audio: media, mimetype: mimeType, ptt: false });
+  else result = await sock.sendMessage(jid, { document: media, mimetype: mimeType, fileName, caption });
+  return { result, resolvedPn };
+}
+
