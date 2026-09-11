@@ -1,26 +1,57 @@
-# HeloZap
+# ZapModel — Central Omnichannel
 
-.
+Sistema de atendimento inspirado funcionalmente no código-fonte de referência HelloZap fornecido para o projeto.
 
-This project was built with [Lovable](https://lovable.dev).
+## Fluxo de desenvolvimento
 
-**Live app**: https://zapmodel.lovable.app
+- **GitHub é a fonte oficial do código.**
+- Todas as alterações do projeto devem ser realizadas diretamente neste repositório.
+- **Lovable deve ser usado somente para visualização/preview do projeto**, sem geração ou edição de código.
+- Branch principal: `main`.
 
-## Build with Lovable
+## Preview
 
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/37c7559c-ca7c-4862-b0cb-612b1262cbd0).
+https://zapmodel.lovable.app
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
+## Módulos implementados na interface
 
-## Development
+- Login e sessão de demonstração
+- Dashboard operacional
+- Atendimentos/Tickets
+- Conversa por atendimento
+- Alteração de status do ticket
+- Contatos
+- Conexões WhatsApp e fluxo visual de QR Code
+- Filas e setores
+- Respostas rápidas
+- Kanban
+- Agendamentos
+- Tarefas
+- Campanhas
+- Chat interno
+- Biblioteca de arquivos
+- Integrações e API
+- Usuários e perfis
+- Financeiro/assinatura
+- Configurações gerais
+- Layout responsivo para desktop e dispositivos móveis
+- Persistência local dos dados de demonstração usando `localStorage`
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+## Referência técnica analisada
+
+O pacote de referência possui frontend React e backend Node.js/TypeScript com Express, Sequelize, Socket.IO, Bull/Redis, autenticação JWT, WhatsApp via Baileys, campanhas, filas, contatos, tickets, agendamentos, integrações e múltiplas empresas.
+
+A versão atual deste repositório recria a experiência funcional para preview mantendo a stack moderna do projeto (React + TanStack Start + Vite). A conexão real com WhatsApp, banco persistente, filas Redis, autenticação de produção e disparos reais devem ser configurados na camada de backend antes de uso produtivo.
+
+## Desenvolvimento local
 
 ```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
+npm install
 npm run dev
+```
+
+Para produção:
+
+```sh
+npm run build
 ```
