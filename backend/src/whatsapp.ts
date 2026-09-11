@@ -16,13 +16,29 @@ export type ConnectionEvent = {
 export type IncomingMessageEvent = {
   sessionId: string;
   remoteJid: string;
-  number: string;
+  /** JID endereçável do contato (pode ser @lid quando não há PN conhecido). */
+  whatsappJid: string;
+  /** Número real (PN) quando conhecido; null para LIDs não resolvidos. */
+  number: string | null;
   pushName?: string;
   body: string;
   fromMe: boolean;
   externalId?: string;
   raw: WAMessage;
 };
+
+/** Destino de envio: número real e/ou JID armazenado no contato. */
+export type SendTarget = {
+  number?: string | null;
+  whatsappJid?: string | null;
+};
+
+export type SendResult = {
+  result: unknown;
+  /** PN resolvido a partir de um LID, para autocorreção do contato. */
+  resolvedPn: string | null;
+};
+
 
 type EventSink = {
   onConnection?: (event: ConnectionEvent) => Promise<void> | void;
@@ -53,6 +69,61 @@ function getBody(message: WAMessage): string {
     ''
   );
 }
+
+const isLid = (jid?: string | null) => Boolean(jid && jid.endsWith('@lid'));
+const isPnJid = (jid?: string | null) => Boolean(jid && jid.endsWith('@s.whatsapp.net'));
+
+/** Normaliza um JID de usuário removendo device/agent (ex.: 55...:12@s.whatsapp.net). */
+function normalizeJid(jid?: string | null): string | null {
+  if (!jid) return null;
+  const [user, server] = jid.split('@');
+  if (!user || !server) return null;
+  const bare = user.split(':')[0]!.split('_')[0]!;
+  return `${bare}@${server}`;
+}
+
+/** Extrai o número real apenas de JIDs de telefone (nunca de @lid). */
+function numberFromPnJid(jid?: string | null): string | null {
+  const normalized = normalizeJid(jid);
+  if (!normalized || !isPnJid(normalized)) return null;
+  const digits = normalized.split('@')[0]!.replace(/\D/g, '');
+  return digits || null;
+}
+
+/** Tenta mapear um LID para o número real via signalRepository (Baileys 6.7.x). */
+async function lidToPn(sock: WASocket, lid: string): Promise<string | null> {
+  try {
+    const mapping = (sock as any)?.signalRepository?.lidMapping;
+    const pn = await mapping?.getPNForLID?.(lid);
+    return normalizeJid(typeof pn === 'string' ? pn : null);
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve o JID endereçável do contato e o número real, quando existir. */
+async function resolvePeer(
+  sock: WASocket,
+  message: WAMessage
+): Promise<{ whatsappJid: string; number: string | null }> {
+  const key = message.key as any;
+  const remoteJid = normalizeJid(key.remoteJid)!;
+  const candidates = [key.remoteJidAlt, key.senderPn, key.participantPn, (message as any).senderPn]
+    .map(normalizeJid)
+    .filter(isPnJid) as string[];
+
+  if (candidates[0]) return { whatsappJid: candidates[0], number: numberFromPnJid(candidates[0]) };
+
+  if (isLid(remoteJid)) {
+    const pn = await lidToPn(sock, remoteJid);
+    if (pn && isPnJid(pn)) return { whatsappJid: pn, number: numberFromPnJid(pn) };
+    return { whatsappJid: remoteJid, number: null };
+  }
+
+  return { whatsappJid: remoteJid, number: numberFromPnJid(remoteJid) };
+}
+
+
 
 export async function connectSession(sessionId: string) {
   if (sockets.has(sessionId)) return;
@@ -119,11 +190,12 @@ export async function connectSession(sessionId: string) {
       if (!remoteJid || remoteJid === 'status@broadcast' || remoteJid.endsWith('@g.us')) continue;
       const body = getBody(message);
       if (!body && !message.message) continue;
-      const number = remoteJid.replace(/\D/g, '');
+      const peer = await resolvePeer(sock, message);
       await sink.onMessage?.({
         sessionId,
         remoteJid,
-        number,
+        whatsappJid: peer.whatsappJid,
+        number: peer.number,
         pushName: message.pushName || undefined,
         body,
         fromMe: Boolean(message.key.fromMe),
@@ -132,6 +204,7 @@ export async function connectSession(sessionId: string) {
       });
     }
   });
+
 }
 
 export async function disconnectSession(sessionId: string, logout = false) {
@@ -149,24 +222,59 @@ export function isSessionConnected(sessionId: string) {
   return sockets.has(sessionId);
 }
 
-function jidFor(number: string) {
+function pnJidFor(number: string) {
   const clean = number.replace(/\D/g, '');
   if (!clean) throw new Error('Número de telefone inválido');
   return `${clean}@s.whatsapp.net`;
 }
 
-export async function sendText(sessionId: string, number: string, text: string) {
-  const sock = sockets.get(sessionId);
-  if (!sock) throw new Error('WhatsApp não está conectado');
-  return sock.sendMessage(jidFor(number), { text });
+/**
+ * Resolve o destino de envio. Aceita número puro ou alvo com whatsappJid.
+ * Retorna o JID a usar e, quando aplicável, o PN resolvido a partir de um LID.
+ */
+async function resolveSendTarget(
+  sock: WASocket,
+  target: SendTarget | string
+): Promise<{ jid: string; resolvedPn: string | null }> {
+  const normalized: SendTarget = typeof target === 'string' ? { number: target } : target;
+  const storedJid = normalizeJid(normalized.whatsappJid);
+  const number = (normalized.number || '').replace(/\D/g, '');
+
+  if (storedJid && isLid(storedJid)) {
+    const pn = await lidToPn(sock, storedJid);
+    if (pn && isPnJid(pn)) return { jid: pn, resolvedPn: numberFromPnJid(pn) };
+    return { jid: storedJid, resolvedPn: null };
+  }
+
+  if (storedJid && isPnJid(storedJid)) return { jid: storedJid, resolvedPn: null };
+  if (number) return { jid: pnJidFor(number), resolvedPn: null };
+  throw new Error('Destino de envio inválido');
 }
 
-export async function sendMedia(sessionId: string, number: string, media: Buffer, mimeType: string, fileName: string, caption?: string) {
+export async function sendText(sessionId: string, target: SendTarget | string, text: string): Promise<SendResult> {
   const sock = sockets.get(sessionId);
   if (!sock) throw new Error('WhatsApp não está conectado');
-  const jid = jidFor(number);
-  if (mimeType.startsWith('image/')) return sock.sendMessage(jid, { image: media, caption });
-  if (mimeType.startsWith('video/')) return sock.sendMessage(jid, { video: media, caption });
-  if (mimeType.startsWith('audio/')) return sock.sendMessage(jid, { audio: media, mimetype: mimeType, ptt: false });
-  return sock.sendMessage(jid, { document: media, mimetype: mimeType, fileName, caption });
+  const { jid, resolvedPn } = await resolveSendTarget(sock, target);
+  const result = await sock.sendMessage(jid, { text });
+  return { result, resolvedPn };
 }
+
+export async function sendMedia(
+  sessionId: string,
+  target: SendTarget | string,
+  media: Buffer,
+  mimeType: string,
+  fileName: string,
+  caption?: string
+): Promise<SendResult> {
+  const sock = sockets.get(sessionId);
+  if (!sock) throw new Error('WhatsApp não está conectado');
+  const { jid, resolvedPn } = await resolveSendTarget(sock, target);
+  let result: unknown;
+  if (mimeType.startsWith('image/')) result = await sock.sendMessage(jid, { image: media, caption });
+  else if (mimeType.startsWith('video/')) result = await sock.sendMessage(jid, { video: media, caption });
+  else if (mimeType.startsWith('audio/')) result = await sock.sendMessage(jid, { audio: media, mimetype: mimeType, ptt: false });
+  else result = await sock.sendMessage(jid, { document: media, mimetype: mimeType, fileName, caption });
+  return { result, resolvedPn };
+}
+
