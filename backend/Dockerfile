@@ -21,4 +21,4 @@ COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/dist ./dist
 RUN mkdir -p /app/data/wa-auth /app/data/uploads
 EXPOSE 8080
-CMD ["sh","-c","npx prisma migrate deploy || npx prisma db push; node dist/prisma/seed.js || true; node dist/src/app.js"]
+CMD ["sh","-c","node dist/src/init-turso.js && node dist/prisma/seed.js && node dist/src/app.js"]
