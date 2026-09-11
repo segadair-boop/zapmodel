@@ -74,7 +74,6 @@ const fail = (res: Response, error: unknown, status = 400) => {
   return res.status(status).json({ error: error instanceof Error ? error.message : String(error) });
 };
 
-/** Remove o arquivo temporário quando o conteúdo é rejeitado. */
 async function discardUpload(filePath?: string) {
   if (!filePath) return;
   await fs.rm(filePath, { force: true }).catch(() => undefined);
@@ -277,6 +276,10 @@ async function runCampaign(campaignId: string, companyId: string, sessionId: str
     if (targets.error) throw targets.error;
 
     for (const target of targets.data || []) {
+      const state = await db.from('Campaign').select('status').eq('id', campaignId).maybeSingle();
+      if (state.error) throw state.error;
+      if (state.data?.status !== 'RUNNING') return;
+
       try {
         const contact = await db.from('Contact').select('name,number,whatsappJid').eq('id', target.contactId).single();
         if (contact.error) throw contact.error;
@@ -296,8 +299,12 @@ async function runCampaign(campaignId: string, companyId: string, sessionId: str
       await new Promise(r => setTimeout(r, 2500));
     }
 
-    await db.from('Campaign').update({ status: 'FINISHED', finishedAt: nowIso(), updatedAt: nowIso() }).eq('id', campaignId);
-    io.to(companyId).emit('campaign:finished', { id: campaignId });
+    const finalState = await db.from('Campaign').select('status').eq('id', campaignId).maybeSingle();
+    if (finalState.error) throw finalState.error;
+    if (finalState.data?.status === 'RUNNING') {
+      await db.from('Campaign').update({ status: 'FINISHED', finishedAt: nowIso(), updatedAt: nowIso() }).eq('id', campaignId);
+      io.to(companyId).emit('campaign:finished', { id: campaignId });
+    }
   } catch (err) {
     console.error('[worker] falha ao processar campanha', campaignId, err);
   } finally {
@@ -312,8 +319,9 @@ async function resumeCampaigns() {
     if (running.error) throw running.error;
     for (const campaign of running.data || []) {
       const pending = await db.from('CampaignContact').select('contactId', { count: 'exact', head: true }).eq('campaignId', campaign.id).eq('status', 'PENDING');
+      if (pending.error) throw pending.error;
       if (!pending.count) {
-        await db.from('Campaign').update({ status: 'FINISHED', finishedAt: nowIso(), updatedAt: nowIso() }).eq('id', campaign.id);
+        await db.from('Campaign').update({ status: 'FINISHED', finishedAt: nowIso(), updatedAt: nowIso() }).eq('id', campaign.id).eq('status', 'RUNNING');
         continue;
       }
       const session = await db.from('WhatsAppSession').select('id').eq('companyId', campaign.companyId).eq('status', 'CONNECTED').limit(1).maybeSingle();
@@ -358,6 +366,40 @@ app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: Au
 
     res.json({ ok: true, total: targets.count });
     void runCampaign(id, req.auth!.companyId, sessionId, String(campaign.data.message || ''));
+  } catch (e) {
+    fail(res, e, 500);
+  }
+});
+
+app.post('/api/campaigns/:id/pause', requireAuth(), requireAdmin, async (req: AuthedRequest, res) => {
+  try {
+    const id = param(req, 'id');
+    const result = await req.db!
+      .from('Campaign')
+      .update({ status: 'PAUSED', updatedAt: nowIso() })
+      .eq('id', id)
+      .eq('status', 'RUNNING')
+      .select('id');
+    if (result.error) throw result.error;
+    if (!result.data?.length) return res.status(409).json({ error: 'Somente campanhas em execução podem ser pausadas.' });
+    res.json({ ok: true });
+  } catch (e) {
+    fail(res, e, 500);
+  }
+});
+
+app.post('/api/campaigns/:id/cancel', requireAuth(), requireAdmin, async (req: AuthedRequest, res) => {
+  try {
+    const id = param(req, 'id');
+    const result = await req.db!
+      .from('Campaign')
+      .update({ status: 'CANCELLED', finishedAt: nowIso(), updatedAt: nowIso() })
+      .eq('id', id)
+      .in('status', ['DRAFT', 'SCHEDULED', 'RUNNING', 'PAUSED'])
+      .select('id');
+    if (result.error) throw result.error;
+    if (!result.data?.length) return res.status(409).json({ error: 'Esta campanha não pode mais ser cancelada.' });
+    res.json({ ok: true });
   } catch (e) {
     fail(res, e, 500);
   }
@@ -433,7 +475,24 @@ app.post('/api/v1/messages/send', async (req, res) => {
     if (!sessionId || !isSessionConnected(sessionId)) return res.status(409).json({ error: 'WhatsApp não está conectado' });
 
     const sent = await sendText(sessionId, { number }, body);
-    res.status(201).json({ ok: true, externalId: (sent.result as any)?.key?.id ?? null });
+    const externalId = (sent.result as any)?.key?.id as string | undefined;
+    const resolvedNumber = sent.resolvedPn || number;
+    const jid = `${resolvedNumber}@s.whatsapp.net`;
+    const persisted = await persistIncomingMessage({
+      sessionId,
+      remoteJid: jid,
+      whatsappJid: jid,
+      number: resolvedNumber,
+      body,
+      fromMe: true,
+      externalId,
+      raw: sent.result as any
+    });
+    if (persisted) {
+      io.to(persisted.companyId).emit('message:created', { ticketId: persisted.ticketId, message: persisted.message });
+      io.to(persisted.companyId).emit('ticket:updated', { id: persisted.ticketId });
+    }
+    res.status(201).json({ ok: true, externalId: externalId ?? null, ticketId: persisted?.ticketId ?? null });
   } catch (e) {
     fail(res, e, 500);
   }
@@ -600,4 +659,5 @@ server.listen(port, () => {
   console.log(`[worker] ouvindo na porta ${port}`);
   void bootstrap();
   setInterval(() => void processSchedules(), 30_000).unref();
+  setInterval(() => void resumeCampaigns(), 60_000).unref();
 });
