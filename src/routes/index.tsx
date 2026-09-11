@@ -179,12 +179,11 @@ function Tickets({session}:{session:Session}){
     }catch(e:any){ setMsgError(e?.message||"Não foi possível carregar as mensagens.") }
   },[ticket?.id]);
   useEffect(()=>{loadMessages();if(!ticket)return;const id=setInterval(()=>{loadMessages();r.reload()},2500);return()=>clearInterval(id)},[loadMessages,ticket?.id]);
-  async function send(){if(!ticket||!text.trim())return;try{
+  async function send(){if(!ticket||!text.trim())return;const body=text.trim();try{
     if(!API) throw new Error("O worker do WhatsApp está indisponível. A mensagem não foi enviada.");
-    const body=text.trim(); setText("");
     const m=await worker<any>(`/api/tickets/${ticket.id}/messages`,{method:"POST",body:JSON.stringify({body})});
-    setMessages(v=>v.some(x=>x.id===m.id)?v:[...v,m]); r.reload();
-  }catch(e:any){alert(e.message)}}
+    setText(""); setMessages(v=>v.some(x=>x.id===m.id)?v:[...v,m]); r.reload();
+  }catch(e:any){setText(body);alert(e.message)}}
   async function downloadMedia(m:any){try{
     if(!API) throw new Error("O worker do WhatsApp está indisponível para baixar o arquivo.");
     const {data}=await supabase.auth.getSession();
@@ -212,12 +211,14 @@ function Connections({session}:{session:Session}){
   const admin=isAdmin(session.user);
   const r=useData<any[]>(async()=>{
     if(API){ try{ return await worker<any[]>("/api/whatsapp") }catch{ /* worker fora do ar: usa o banco */ } }
-    return await selectAll("WhatsAppSession");
+    const rows=await selectAll("WhatsAppSession");
+    return rows.map(w=>({...w,connected:false,_workerOffline:true}));
   },[],3000);
   async function add(){if(!admin)return;const name=prompt("Nome da conexão:","Principal");if(!name)return;if(!API)return alert("Worker do WhatsApp indisponível.");try{await worker("/api/whatsapp",{method:"POST",body:JSON.stringify({name})});r.reload()}catch(e:any){alert(e.message)}}
   async function action(id:string,kind:"connect"|"disconnect"){if(!admin)return;if(!API)return alert("Worker do WhatsApp indisponível.");try{await worker(`/api/whatsapp/${id}/${kind}`,{method:"POST",body:JSON.stringify(kind==="disconnect"?{logout:false}:{})});r.reload()}catch(e:any){alert(e.message)}}
-  const realStatus=(w:any)=> w.connected===false&&String(w.status)==="CONNECTED" ? "DISCONNECTED" : String(w.status);
-  return <div className="stack"><div className="page-actions"><p>{admin?"Gerencie sessões persistentes do WhatsApp.":"Consulte o status das conexões de WhatsApp."}</p>{admin?<button className="primary-btn" onClick={add}><Plus size={16}/>Nova conexão</button>:null}</div>{r.error?<Alert text={r.error}/>:null}<div className="cards-grid">{r.data.map(w=><div className="panel connection-card" key={w.id}><div className="connection-icon"><MessageCircleMore/></div><h3>{w.name}</h3><p>{w.phone?formatPhone(w.phone):"Aguardando leitura do QR Code"}</p><span className={`status ${realStatus(w).toLowerCase()}`}>{realStatus(w)}</span>{w.qr?<img className="qr-real" src={w.qr} alt="QR Code WhatsApp"/>:null}{admin?<div className="row-actions"><button onClick={()=>action(w.id,"connect")}>Conectar</button><button onClick={()=>action(w.id,"disconnect")}>Desconectar</button></div>:null}</div>)}</div></div>
+  const realStatus=(w:any)=>w._workerOffline?"NÃO CONFIRMADO":w.connected===false&&String(w.status)==="CONNECTED"?"DISCONNECTED":String(w.status);
+  const statusClass=(w:any)=>w._workerOffline?"unknown":realStatus(w).toLowerCase();
+  return <div className="stack"><div className="page-actions"><p>{admin?"Gerencie sessões persistentes do WhatsApp.":"Consulte o status das conexões de WhatsApp."}</p>{admin?<button className="primary-btn" onClick={add}><Plus size={16}/>Nova conexão</button>:null}</div>{r.error?<Alert text={r.error}/>:null}<div className="cards-grid">{r.data.map(w=><div className="panel connection-card" key={w.id}><div className="connection-icon"><MessageCircleMore/></div><h3>{w.name}</h3><p>{w.phone?formatPhone(w.phone):"Aguardando leitura do QR Code"}</p><span className={`status ${statusClass(w)}`}>{realStatus(w)}</span>{w.qr&&!w._workerOffline?<img className="qr-real" src={w.qr} alt="QR Code WhatsApp"/>:null}{admin?<div className="row-actions"><button onClick={()=>action(w.id,"connect")}>Conectar</button><button onClick={()=>action(w.id,"disconnect")}>Desconectar</button></div>:null}</div>)}</div></div>
 }
 
 function Contacts({session}:{session:Session}){
