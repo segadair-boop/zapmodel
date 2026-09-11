@@ -35,24 +35,89 @@ export async function applyConnectionEvent(event: ConnectionEvent): Promise<Sess
   return (data as SessionRow) || null;
 }
 
-async function findOrCreateContact(db: SupabaseClient, companyId: string, number: string, name: string) {
-  const existing = await db
-    .from('Contact')
-    .select('id,name,number,companyId')
-    .eq('companyId', companyId)
-    .eq('number', number)
-    .maybeSingle();
-  if (existing.error) throw existing.error;
-  if (existing.data) return existing.data as { id: string; name: string; number: string; companyId: string };
+type ContactRow = { id: string; name: string; number: string; companyId: string; whatsappJid: string | null };
 
+const isLid = (jid?: string | null) => Boolean(jid && jid.endsWith('@lid'));
+
+/**
+ * Localiza por whatsappJid (quando houver) e depois pelo número real.
+ * Autocorrige contatos legados criados com os dígitos de um LID.
+ */
+export async function findOrCreateContact(
+  db: SupabaseClient,
+  companyId: string,
+  opts: { number: string | null; whatsappJid: string | null; name?: string }
+): Promise<ContactRow> {
+  const cols = 'id,name,number,companyId,whatsappJid';
+  let found: ContactRow | null = null;
+
+  if (opts.whatsappJid) {
+    const byJid = await db
+      .from('Contact')
+      .select(cols)
+      .eq('companyId', companyId)
+      .eq('whatsappJid', opts.whatsappJid)
+      .maybeSingle();
+    if (byJid.error) throw byJid.error;
+    found = (byJid.data as ContactRow) || null;
+  }
+
+  if (!found && opts.number) {
+    const byNumber = await db
+      .from('Contact')
+      .select(cols)
+      .eq('companyId', companyId)
+      .eq('number', opts.number)
+      .maybeSingle();
+    if (byNumber.error) throw byNumber.error;
+    found = (byNumber.data as ContactRow) || null;
+  }
+
+  // contato legado gravado com os dígitos do LID
+  if (!found && opts.whatsappJid && isLid(opts.whatsappJid)) {
+    const lidDigits = opts.whatsappJid.split('@')[0]!.replace(/\D/g, '');
+    if (lidDigits) {
+      const legacy = await db
+        .from('Contact')
+        .select(cols)
+        .eq('companyId', companyId)
+        .eq('number', lidDigits)
+        .maybeSingle();
+      if (legacy.error) throw legacy.error;
+      found = (legacy.data as ContactRow) || null;
+    }
+  }
+
+  if (found) {
+    const patch: Record<string, unknown> = {};
+    if (opts.whatsappJid && found.whatsappJid !== opts.whatsappJid) patch['whatsappJid'] = opts.whatsappJid;
+    // só sobrescreve o número quando temos um PN real
+    if (opts.number && found.number !== opts.number) patch['number'] = opts.number;
+    if (opts.name && (!found.name || found.name === found.number)) patch['name'] = opts.name;
+    if (Object.keys(patch).length === 0) return found;
+    patch['updatedAt'] = nowIso();
+    const updated = await db.from('Contact').update(patch).eq('id', found.id).select(cols).single();
+    if (updated.error) throw updated.error;
+    return updated.data as ContactRow;
+  }
+
+  const fallbackName = opts.name || opts.number || opts.whatsappJid || 'Contato';
   const created = await db
     .from('Contact')
-    .insert({ id: newId(), companyId, number, name: name || number, updatedAt: nowIso() })
-    .select('id,name,number,companyId')
+    .insert({
+      id: newId(),
+      companyId,
+      number: opts.number || opts.whatsappJid || newId(),
+      whatsappJid: opts.whatsappJid,
+      name: fallbackName,
+      updatedAt: nowIso()
+    })
+    .select(cols)
     .single();
   if (created.error) throw created.error;
-  return created.data as { id: string; name: string; number: string; companyId: string };
+  return created.data as ContactRow;
 }
+
 
 async function findOrCreateTicket(db: SupabaseClient, companyId: string, contactId: string, sessionId: string) {
   const existing = await db
