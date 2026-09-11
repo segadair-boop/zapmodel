@@ -87,12 +87,10 @@ app.use(express.json({ limit: '256kb' }));
 
 /* ------------------------ health / readiness ---------------------- */
 
-// Liveness: responde enquanto o processo estiver vivo.
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'zapmodel-worker', time: nowIso() });
 });
 
-// Readiness: valida a conta técnica e o acesso ao Lovable Cloud.
 app.get('/api/ready', async (_req, res) => {
   try {
     const db = await background();
@@ -104,7 +102,6 @@ app.get('/api/ready', async (_req, res) => {
     res.status(503).json({ ok: false, database: 'lovable-cloud', error: 'Serviço indisponível.' });
   }
 });
-
 
 /* --------------------------- whatsapp --------------------------- */
 
@@ -223,7 +220,6 @@ app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), asyn
       const sent = await sendMedia(sessionId, target, await fs.readFile(req.file.path), req.file.mimetype, safeFileName, text || undefined);
       externalId = (sent.result as any)?.key?.id;
       resolvedPn = sent.resolvedPn;
-      // Registra o arquivo na biblioteca para ter uma URL de download válida.
       const asset = await req.db!.from('FileAsset').insert({
         id: newId(),
         companyId: req.auth!.companyId,
@@ -235,7 +231,6 @@ app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), asyn
       if (asset.error) throw asset.error;
       mediaUrl = `/api/files/${asset.data.id}/download`;
       mediaType = req.file.mimetype;
-
     } else {
       if (!text) return res.status(400).json({ error: 'Mensagem vazia' });
       const sent = await sendText(sessionId, target, text);
@@ -270,12 +265,9 @@ app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), asyn
 
 /* --------------------------- campanhas -------------------------- */
 
-// Garante que uma campanha não tenha dois loops de envio simultâneos.
 const runningCampaigns = new Set<string>();
+const STARTABLE_CAMPAIGN_STATUSES = ['DRAFT', 'SCHEDULED', 'PAUSED'];
 
-
-
-/** Envia os destinatários PENDING de uma campanha e a finaliza ao terminar. */
 async function runCampaign(campaignId: string, companyId: string, sessionId: string, message: string) {
   if (runningCampaigns.has(campaignId)) return;
   runningCampaigns.add(campaignId);
@@ -313,7 +305,6 @@ async function runCampaign(campaignId: string, companyId: string, sessionId: str
   }
 }
 
-/** Retoma campanhas RUNNING após reinício e finaliza as que não têm pendências. */
 async function resumeCampaigns() {
   try {
     const db = await background();
@@ -341,7 +332,12 @@ app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: Au
     const campaign = await req.db!.from('Campaign').select('*').eq('id', id).maybeSingle();
     if (campaign.error) throw campaign.error;
     if (!campaign.data) return res.status(404).json({ error: 'Campanha não encontrada' });
-    if (campaign.data.status === 'RUNNING') return res.status(409).json({ error: 'Esta campanha já está em execução' });
+    if (!STARTABLE_CAMPAIGN_STATUSES.includes(String(campaign.data.status))) {
+      const message = campaign.data.status === 'RUNNING'
+        ? 'Esta campanha já está em execução'
+        : 'Esta campanha não pode ser iniciada no estado atual';
+      return res.status(409).json({ error: message });
+    }
 
     const session = await req.db!.from('WhatsAppSession').select('id').eq('companyId', req.auth!.companyId).eq('status', 'CONNECTED').limit(1).maybeSingle();
     const sessionId = session.data?.id as string | undefined;
@@ -351,15 +347,14 @@ app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: Au
     if (targets.error) throw targets.error;
     if (!targets.count) return res.status(400).json({ error: 'A campanha não possui destinatários pendentes' });
 
-    // Transição atômica: apenas um pedido consegue sair de DRAFT para RUNNING.
     const claimed = await req.db!
       .from('Campaign')
       .update({ status: 'RUNNING', startedAt: nowIso(), finishedAt: null, updatedAt: nowIso() })
       .eq('id', id)
-      .eq('status', 'DRAFT')
+      .in('status', STARTABLE_CAMPAIGN_STATUSES)
       .select('id');
     if (claimed.error) throw claimed.error;
-    if (!claimed.data?.length) return res.status(409).json({ error: 'Esta campanha já está em execução' });
+    if (!claimed.data?.length) return res.status(409).json({ error: 'O estado da campanha mudou. Atualize a tela e tente novamente.' });
 
     res.json({ ok: true, total: targets.count });
     void runCampaign(id, req.auth!.companyId, sessionId, String(campaign.data.message || ''));
@@ -367,7 +362,6 @@ app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: Au
     fail(res, e, 500);
   }
 });
-
 
 /* --------------------------- arquivos --------------------------- */
 
@@ -455,7 +449,7 @@ async function processSchedules() {
     const db = await background();
     const due = await db
       .from('Schedule')
-      .select('id,body,contactNumber,companyId,scheduledAt,attempts')
+      .select('id,body,contactNumber,companyId,scheduledAt,attempts,lastError')
       .is('sentAt', null)
       .lt('attempts', 5)
       .lte('scheduledAt', nowIso())
@@ -468,7 +462,12 @@ async function processSchedules() {
       try {
         const session = await db.from('WhatsAppSession').select('id').eq('companyId', item.companyId).eq('status', 'CONNECTED').limit(1).maybeSingle();
         const sessionId = session.data?.id as string | undefined;
-        if (!sessionId || !isSessionConnected(sessionId)) continue;
+        if (!sessionId || !isSessionConnected(sessionId)) {
+          if (item.lastError !== 'Aguardando conexão do WhatsApp.') {
+            await db.from('Schedule').update({ lastError: 'Aguardando conexão do WhatsApp.', updatedAt: nowIso() }).eq('id', item.id);
+          }
+          continue;
+        }
         const number = String(item.contactNumber || '').replace(/\D/g, '');
         const body = String(item.body || '').trim();
         if (!number || !body) {
@@ -490,7 +489,6 @@ async function processSchedules() {
         }
       }
     }
-
   } catch (err) {
     console.error('[worker] falha ao processar agendamentos', err);
   } finally {
@@ -511,7 +509,6 @@ setWhatsAppEventSink({
   },
   onMessage: async event => {
     try {
-      // Mídia recebida vira arquivo na biblioteca com URL de download válida.
       const mediaAllowed = event.media
         ? isAllowedUpload(event.media.mimeType, event.media.fileName) && hasValidSignature(event.media.buffer, event.media.mimeType)
         : false;
@@ -556,7 +553,6 @@ setWhatsAppEventSink({
       console.error('[worker] falha ao gravar mensagem', err);
     }
   }
-
 });
 
 /* ---------------------------- socket ---------------------------- */
@@ -595,7 +591,6 @@ async function bootstrap() {
     }
     await processSchedules();
     await resumeCampaigns();
-
   } catch (err) {
     console.error('[worker] conta técnica indisponível:', err);
   }
