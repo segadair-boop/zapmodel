@@ -59,9 +59,15 @@ const fail = (res: Response, error: unknown, status = 400) =>
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 
-/* ---------------------------- health ---------------------------- */
+/* ------------------------ health / readiness ---------------------- */
 
-app.get('/api/health', async (_req, res) => {
+// Liveness: responde enquanto o processo estiver vivo.
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, service: 'zapmodel-worker', time: nowIso() });
+});
+
+// Readiness: valida a conta técnica e o acesso ao Lovable Cloud.
+app.get('/api/ready', async (_req, res) => {
   try {
     const db = await background();
     const { error } = await db.from('WhatsAppSession').select('id').limit(1);
@@ -71,6 +77,7 @@ app.get('/api/health', async (_req, res) => {
     res.status(503).json({ ok: false, database: 'lovable-cloud', error: e?.message });
   }
 });
+
 
 /* --------------------------- whatsapp --------------------------- */
 
@@ -183,8 +190,19 @@ app.post('/api/tickets/:id/messages', requireAuth(), upload.single('file'), asyn
       const sent = await sendMedia(sessionId, target, await fs.readFile(req.file.path), req.file.mimetype, req.file.originalname, text || undefined);
       externalId = (sent.result as any)?.key?.id;
       resolvedPn = sent.resolvedPn;
-      mediaUrl = `/api/files/raw/${path.basename(req.file.path)}`;
+      // Registra o arquivo na biblioteca para ter uma URL de download válida.
+      const asset = await req.db!.from('FileAsset').insert({
+        id: newId(),
+        companyId: req.auth!.companyId,
+        name: req.file.originalname,
+        path: path.basename(req.file.path),
+        mimeType: req.file.mimetype,
+        size: req.file.size
+      }).select('id').single();
+      if (asset.error) throw asset.error;
+      mediaUrl = `/api/files/${asset.data.id}/download`;
       mediaType = req.file.mimetype;
+
     } else {
       if (!text) return res.status(400).json({ error: 'Mensagem vazia' });
       const sent = await sendText(sessionId, target, text);
@@ -235,10 +253,20 @@ app.post('/api/campaigns/:id/start', requireAuth(), requireAdmin, async (req: Au
     if (targets.error) throw targets.error;
     if (!targets.data?.length) return res.status(400).json({ error: 'A campanha não possui destinatários pendentes' });
 
-    await req.db!.from('Campaign').update({ status: 'RUNNING', startedAt: nowIso(), finishedAt: null, updatedAt: nowIso() }).eq('id', id);
+    // Transição atômica: só um pedido consegue sair do estado atual para RUNNING.
+    const claimed = await req.db!
+      .from('Campaign')
+      .update({ status: 'RUNNING', startedAt: nowIso(), finishedAt: null, updatedAt: nowIso() })
+      .eq('id', id)
+      .neq('status', 'RUNNING')
+      .select('id');
+    if (claimed.error) throw claimed.error;
+    if (!claimed.data?.length) return res.status(409).json({ error: 'Esta campanha já está em execução' });
+
     res.json({ ok: true, total: targets.data.length });
 
     const companyId = req.auth!.companyId;
+
     void (async () => {
       for (const target of targets.data || []) {
         try {
@@ -350,28 +378,42 @@ async function processSchedules() {
     const db = await background();
     const due = await db
       .from('Schedule')
-      .select('id,body,contactNumber,companyId,scheduledAt')
+      .select('id,body,contactNumber,companyId,scheduledAt,attempts')
       .is('sentAt', null)
+      .lt('attempts', 5)
       .lte('scheduledAt', nowIso())
       .order('scheduledAt', { ascending: true })
       .limit(20);
     if (due.error) throw due.error;
 
     for (const item of due.data || []) {
+      const attempts = Number(item.attempts || 0);
       try {
         const session = await db.from('WhatsAppSession').select('id').eq('companyId', item.companyId).eq('status', 'CONNECTED').limit(1).maybeSingle();
         const sessionId = session.data?.id as string | undefined;
         if (!sessionId || !isSessionConnected(sessionId)) continue;
         const number = String(item.contactNumber || '').replace(/\D/g, '');
         const body = String(item.body || '').trim();
-        if (!number || !body) continue;
+        if (!number || !body) {
+          await db.from('Schedule').update({ attempts: 5, lastError: 'Número ou mensagem inválidos', updatedAt: nowIso() }).eq('id', item.id);
+          continue;
+        }
         await sendText(sessionId, { number }, body);
-        await db.from('Schedule').update({ sentAt: nowIso(), updatedAt: nowIso() }).eq('id', item.id).is('sentAt', null);
+        await db.from('Schedule').update({ sentAt: nowIso(), lastError: null, updatedAt: nowIso() }).eq('id', item.id).is('sentAt', null);
         io.to(item.companyId).emit('schedule:sent', { id: item.id });
-      } catch (err) {
+      } catch (err: any) {
         console.error('[worker] falha em agendamento', item.id, err);
+        try {
+          await db
+            .from('Schedule')
+            .update({ attempts: attempts + 1, lastError: String(err?.message || 'Falha no envio'), updatedAt: nowIso() })
+            .eq('id', item.id);
+        } catch (logErr) {
+          console.error('[worker] falha ao registrar erro de agendamento', logErr);
+        }
       }
     }
+
   } catch (err) {
     console.error('[worker] falha ao processar agendamentos', err);
   } finally {

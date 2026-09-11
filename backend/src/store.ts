@@ -35,7 +35,7 @@ export async function applyConnectionEvent(event: ConnectionEvent): Promise<Sess
   return (data as SessionRow) || null;
 }
 
-type ContactRow = { id: string; name: string; number: string; companyId: string; whatsappJid: string | null };
+type ContactRow = { id: string; name: string; number: string | null; companyId: string; whatsappJid: string | null };
 const isLid = (jid?: string | null) => Boolean(jid && jid.endsWith('@lid'));
 
 /** Localiza por JID e depois por número, autocorrigindo contatos legados. */
@@ -72,6 +72,7 @@ export async function findOrCreateContact(
   if (found) {
     const patch: Record<string, unknown> = {};
     if (opts.whatsappJid && found.whatsappJid !== opts.whatsappJid) patch['whatsappJid'] = opts.whatsappJid;
+    // Só grava telefone quando existe PN real; nunca dígitos de LID.
     if (normalizedNumber && found.number !== normalizedNumber) patch['number'] = normalizedNumber;
     if (opts.name && (!found.name || found.name === found.number || isLid(found.whatsappJid))) patch['name'] = opts.name;
     if (Object.keys(patch).length === 0) return found;
@@ -87,7 +88,8 @@ export async function findOrCreateContact(
     .insert({
       id: newId(),
       companyId,
-      number: normalizedNumber || opts.whatsappJid || newId(),
+      // Sem PN resolvido o telefone fica nulo; a identificação é feita pelo JID.
+      number: normalizedNumber,
       whatsappJid: opts.whatsappJid,
       name: fallbackName,
       updatedAt: nowIso()
@@ -97,6 +99,7 @@ export async function findOrCreateContact(
   if (created.error) throw created.error;
   return created.data as ContactRow;
 }
+
 
 type TicketRow = { id: string; status: string; unread: number };
 

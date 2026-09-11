@@ -213,7 +213,7 @@ export type Database = {
           id: string
           name: string
           notes: string | null
-          number: string
+          number: string | null
           updatedAt: string
           whatsappJid: string | null
         }
@@ -225,7 +225,7 @@ export type Database = {
           id: string
           name: string
           notes?: string | null
-          number: string
+          number?: string | null
           updatedAt?: string
           whatsappJid?: string | null
         }
@@ -237,7 +237,7 @@ export type Database = {
           id?: string
           name?: string
           notes?: string | null
-          number?: string
+          number?: string | null
           updatedAt?: string
           whatsappJid?: string | null
         }
@@ -424,11 +424,13 @@ export type Database = {
       }
       Schedule: {
         Row: {
+          attempts: number
           body: string | null
           companyId: string
           contactNumber: string | null
           createdAt: string
           id: string
+          lastError: string | null
           scheduledAt: string
           sentAt: string | null
           title: string
@@ -436,11 +438,13 @@ export type Database = {
           userId: string | null
         }
         Insert: {
+          attempts?: number
           body?: string | null
           companyId: string
           contactNumber?: string | null
           createdAt?: string
           id: string
+          lastError?: string | null
           scheduledAt: string
           sentAt?: string | null
           title: string
@@ -448,11 +452,13 @@ export type Database = {
           userId?: string | null
         }
         Update: {
+          attempts?: number
           body?: string | null
           companyId?: string
           contactNumber?: string | null
           createdAt?: string
           id?: string
+          lastError?: string | null
           scheduledAt?: string
           sentAt?: string | null
           title?: string
